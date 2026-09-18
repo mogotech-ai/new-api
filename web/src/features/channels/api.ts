@@ -284,6 +284,18 @@ export async function updateChannelBalance(
   return res.data
 }
 
+export async function setChannelBalance(
+  id: number,
+  balance: number
+): Promise<ChannelBalanceResponse> {
+  const res = await api.post(
+    `/api/channel/update_balance/${id}`,
+    { balance },
+    channelActionConfig()
+  )
+  return res.data
+}
+
 /**
  * Fetch available models from upstream provider
  */

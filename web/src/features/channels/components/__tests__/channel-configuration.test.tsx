@@ -1234,7 +1234,7 @@ test('quick options show only applicable shortcuts when the provider changes', a
   render(<ConfigurationHarness />)
   await user.click(screen.getByRole('option', { name: 'OpenAI Built-in #1' }))
   let quick = within(screen.getByRole('group', { name: 'Quick options' }))
-  expect(quick.getAllByRole('switch')).toHaveLength(5)
+  expect(quick.getAllByRole('switch')).toHaveLength(6)
   expect(
     quick.queryByRole('switch', { name: 'Force Format' })
   ).not.toBeInTheDocument()
@@ -1252,7 +1252,7 @@ test('quick options show only applicable shortcuts when the provider changes', a
   await user.click(screen.getByRole('button', { name: 'Change provider' }))
   await user.click(screen.getByRole('option', { name: /^DeepSeek / }))
   quick = within(screen.getByRole('group', { name: 'Quick options' }))
-  expect(quick.getAllByRole('switch')).toHaveLength(4)
+  expect(quick.getAllByRole('switch')).toHaveLength(5)
   expect(
     quick.queryByRole('switch', { name: 'Responses WebSocket' })
   ).not.toBeInTheDocument()
@@ -2470,7 +2470,7 @@ test('on wide screens the quick options move into the header as a compact toggle
   await screen.findByDisplayValue('Existing channel')
   const quick = screen.getByRole('group', { name: 'Quick options' })
   expect(quick.closest('[data-slot="sheet-header"]')).not.toBeNull()
-  expect(within(quick).getAllByRole('switch')).toHaveLength(5)
+  expect(within(quick).getAllByRole('switch')).toHaveLength(6)
   // Second header row: status badge and description on the left, toggles right.
   const statusRow = quick.parentElement
   if (!statusRow) throw new Error('status row missing')

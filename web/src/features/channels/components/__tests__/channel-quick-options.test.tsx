@@ -273,6 +273,26 @@ test('task plugin channels hide both passthrough switches', () => {
   expect(
     screen.getByRole('switch', { name: 'Auto-disable channel' })
   ).toBeInTheDocument()
+  expect(
+    screen.queryByRole('switch', { name: 'Log request and response' })
+  ).not.toBeInTheDocument()
+})
+
+test('request and response logging is an explicit channel option', async () => {
+  const user = userEvent.setup()
+  const saved: ChannelFormValues[] = []
+  render(
+    <QuickOptionsHarness
+      confirm={() => Promise.resolve(true)}
+      onSave={(values) => saved.push(values)}
+    />
+  )
+  await user.click(
+    screen.getByRole('switch', { name: 'Log request and response' })
+  )
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() => expect(saved).toHaveLength(1))
+  expect(saved[0].log_request_response_enabled).toBe(true)
 })
 
 describe('responses websocket quick option', () => {

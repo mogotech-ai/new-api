@@ -31,6 +31,18 @@ import type {
   UserInfo,
 } from './types'
 
+export interface RelayPayload {
+  request_id: string
+  channel_id: number
+  created_at: number
+  request_content_type: string
+  response_content_type: string
+  request_body: string
+  response_body: string
+  request_body_truncated: boolean
+  response_body_truncated: boolean
+}
+
 // ============================================================================
 // Generic API Helpers
 // ============================================================================
@@ -78,6 +90,17 @@ export const getAllLogs = (params: GetLogsParams = {}) =>
 export const getUserLogs = (
   params: Omit<GetLogsParams, 'username' | 'channel'> = {}
 ) => fetchLogs('/api/log', params, false)
+
+export async function getRelayPayload(
+  requestId: string
+): Promise<RelayPayload | null> {
+  const response = await api.get<{
+    success: boolean
+    message: string
+    data: RelayPayload | null
+  }>(`/api/log/payload/${encodeURIComponent(requestId)}`)
+  return response.data.data
+}
 
 export const getLogStats = (params: GetLogStatsParams = {}) =>
   fetchLogStats('/api/log', params, true)

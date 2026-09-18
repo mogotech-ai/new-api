@@ -36,6 +36,10 @@ const i18nKeys = {
   'Group Ratio': 'Group Ratio',
   'Total Cost': 'Total Cost',
   'Usage parameters': 'Usage parameters',
+  'Request and response bodies': 'Request and response bodies',
+  Request: 'Request',
+  Response: 'Response',
+  '(truncated)': '(truncated)',
 }
 
 function makeLog(other: LogOtherData): UsageLog {
@@ -107,6 +111,41 @@ test('shows the recorded request and response models in log details', () => {
   expect(rowValue('Request Model')).toBe('requested-model')
   expect(rowValue('Upstream Model')).toBe('mapped-model')
   expect(screen.getByText('unexpected-model')).toBeVisible()
+  queryClient.clear()
+})
+
+test('shows stored relay request and response bodies only in root details', () => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  queryClient.setQueryData(['usage-logs', 'relay-payload', 'req-1'], {
+    request_id: 'req-1',
+    channel_id: 1,
+    created_at: 1,
+    request_content_type: 'application/json',
+    response_content_type: 'application/json',
+    request_body: '{"model":"test"}',
+    response_body: '{"ok":true}',
+    request_body_truncated: true,
+    response_body_truncated: false,
+  })
+  render(
+    <QueryClientProvider client={queryClient}>
+      <DetailsDialog
+        log={makeLog({})}
+        isAdmin
+        isRoot
+        open
+        onOpenChange={() => undefined}
+      />
+    </QueryClientProvider>
+  )
+
+  expect(screen.getByText('Request and response bodies')).toBeVisible()
+  expect(
+    screen.getByRole('textbox', { name: 'Request (truncated)' })
+  ).toBeVisible()
+  expect(screen.getByRole('textbox', { name: 'Response' })).toBeVisible()
   queryClient.clear()
 })
 

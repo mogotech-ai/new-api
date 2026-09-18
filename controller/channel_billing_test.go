@@ -1,13 +1,79 @@
 package controller
 
 import (
+	"bytes"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strconv"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSetChannelBalance(t *testing.T) {
+	for _, dialect := range []struct{ kind, env string }{{"sqlite", ""}, {"mysql", "TEST_MYSQL_DSN"}, {"postgres", "TEST_POSTGRES_DSN"}} {
+		t.Run(dialect.kind, func(t *testing.T) {
+			if dialect.env != "" && os.Getenv(dialect.env) == "" {
+				t.Skip("set " + dialect.env + " to run this database")
+			}
+			db := modelManagementDB(t, dialect.kind, os.Getenv(dialect.env))
+			autoBan := 1
+			channel := model.Channel{Name: "manual-balance", Balance: 12.5, AutoBan: &autoBan}
+			require.NoError(t, db.Create(&channel).Error)
+
+			for _, test := range []struct {
+				name        string
+				body        string
+				wantSuccess bool
+				wantBalance float64
+			}{
+				{name: "sets zero", body: `{"balance":0}`, wantSuccess: true, wantBalance: 0},
+				{name: "sets decimal", body: `{"balance":98.75}`, wantSuccess: true, wantBalance: 98.75},
+				{name: "rejects negative", body: `{"balance":-1}`, wantBalance: 98.75},
+				{name: "requires balance", body: `{}`, wantBalance: 98.75},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					recorder := httptest.NewRecorder()
+					ctx, _ := gin.CreateTestContext(recorder)
+					ctx.Params = gin.Params{{Key: "id", Value: strconv.Itoa(channel.Id)}}
+					ctx.Request = httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(test.body))
+
+					SetChannelBalance(ctx)
+
+					var response struct {
+						Success bool `json:"success"`
+					}
+					require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+					assert.Equal(t, test.wantSuccess, response.Success)
+
+					var stored model.Channel
+					require.NoError(t, db.First(&stored, channel.Id).Error)
+					assert.Equal(t, test.wantBalance, stored.Balance)
+					if test.wantSuccess {
+						assert.Positive(t, stored.BalanceUpdatedTime)
+						assert.True(t, stored.GetSetting().LocalBalanceEnabled)
+					}
+				})
+			}
+
+			originalQuotaPerUnit := common.QuotaPerUnit
+			common.QuotaPerUnit = 500_000
+			t.Cleanup(func() { common.QuotaPerUnit = originalQuotaPerUnit })
+			service.UpdateChannelUsedQuota(channel.Id, 50_000_000)
+			var exhausted model.Channel
+			require.NoError(t, db.First(&exhausted, channel.Id).Error)
+			assert.Zero(t, exhausted.Balance)
+			assert.Equal(t, common.ChannelStatusAutoDisabled, exhausted.Status)
+		})
+	}
+}
 
 func TestGetDeepSeekBalanceUSD(t *testing.T) {
 	tests := []struct {

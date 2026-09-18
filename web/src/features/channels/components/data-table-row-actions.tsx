@@ -25,6 +25,7 @@ import {
   PlugZap,
   Gauge,
   DollarSign,
+  Coins,
   Download,
   Copy,
   Power,
@@ -121,6 +122,11 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const handleQueryBalance = () => {
     setCurrentRow(channel)
     setOpen('balance-query')
+  }
+
+  const handleSetBalance = () => {
+    setCurrentRow(channel)
+    setOpen('balance-set')
   }
 
   const handleFetchModels = () => {
@@ -286,6 +292,13 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
             {t('Query Balance')}
             <DropdownMenuShortcut>
               <DollarSign size={16} />
+            </DropdownMenuShortcut>
+          </DropdownMenuItem>
+
+          <DropdownMenuItem onClick={handleSetBalance}>
+            {t('Set Balance')}
+            <DropdownMenuShortcut>
+              <Coins size={16} />
             </DropdownMenuShortcut>
           </DropdownMenuItem>
 

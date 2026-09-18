@@ -1,14 +1,35 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"gorm.io/gorm"
 
 	"github.com/gin-gonic/gin"
 )
+
+func GetRelayPayload(c *gin.Context) {
+	requestId := strings.TrimSpace(c.Param("request_id"))
+	if requestId == "" {
+		common.ApiErrorMsg(c, "request id is required")
+		return
+	}
+	payload, err := model.GetRelayPayload(requestId)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		common.ApiSuccess(c, nil)
+		return
+	}
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, payload)
+}
 
 func GetAllLogs(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)

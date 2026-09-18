@@ -695,11 +695,12 @@ func SumUsedToken(logType int, startTimestamp int64, endTimestamp int64, modelNa
 }
 
 func CountOldLog(ctx context.Context, targetTimestamp int64) (int64, error) {
-	var total int64
-	if err := LOG_DB.WithContext(ctx).Model(&Log{}).Where("created_at < ?", targetTimestamp).Count(&total).Error; err != nil {
+	var logTotal int64
+	if err := LOG_DB.WithContext(ctx).Model(&Log{}).Where("created_at < ?", targetTimestamp).Count(&logTotal).Error; err != nil {
 		return 0, err
 	}
-	return total, nil
+	payloadTotal, err := countOldRelayPayload(ctx, targetTimestamp)
+	return logTotal + payloadTotal, err
 }
 
 func DeleteOldLogBatch(ctx context.Context, targetTimestamp int64, limit int) (int64, error) {
@@ -715,25 +716,27 @@ func DeleteOldLogBatch(ctx context.Context, targetTimestamp int64, limit int) (i
 		// per-batch mutations would be pathologically slow. Remove all matching
 		// rows in a single synchronous mutation regardless of limit; the reported
 		// count lets the caller's progress loop complete in one pass.
-		total, err := CountOldLog(ctx, targetTimestamp)
+		var total int64
+		err := LOG_DB.WithContext(ctx).Model(&Log{}).Where("created_at < ?", targetTimestamp).Count(&total).Error
 		if err != nil {
 			return 0, err
 		}
-		if total == 0 {
-			return 0, nil
+		if total > 0 {
+			if err := LOG_DB.WithContext(ctx).Exec(
+				"ALTER TABLE logs DELETE WHERE created_at < ? SETTINGS mutations_sync = 1",
+				targetTimestamp,
+			).Error; err != nil {
+				return 0, err
+			}
 		}
-		if err := LOG_DB.WithContext(ctx).Exec(
-			"ALTER TABLE logs DELETE WHERE created_at < ? SETTINGS mutations_sync = 1",
-			targetTimestamp,
-		).Error; err != nil {
-			return 0, err
-		}
-		return total, nil
+		payloadRows, err := deleteOldRelayPayloadBatch(ctx, targetTimestamp, limit)
+		return total + payloadRows, err
 	}
 
 	result := LOG_DB.WithContext(ctx).Where("created_at < ?", targetTimestamp).Limit(limit).Delete(&Log{})
 	if nil != result.Error {
 		return 0, result.Error
 	}
-	return result.RowsAffected, nil
+	payloadRows, err := deleteOldRelayPayloadBatch(ctx, targetTimestamp, limit)
+	return result.RowsAffected + payloadRows, err
 }

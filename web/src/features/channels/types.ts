@@ -83,6 +83,8 @@ export interface ChannelSettings {
   task_plugin_key?: string
   force_format?: boolean
   thinking_to_content?: boolean
+  local_balance_enabled?: boolean
+  log_request_response_enabled?: boolean
   proxy?: string
   pass_through_body_enabled?: boolean
   responses_websocket_enabled?: boolean

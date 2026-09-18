@@ -614,7 +614,7 @@ func (channel *Channel) UpdateResponseTime(responseTime int64) {
 	}
 }
 
-func (channel *Channel) UpdateBalance(balance float64) {
+func (channel *Channel) UpdateBalance(balance float64) error {
 	err := DB.Model(channel).Select("balance_updated_time", "balance").Updates(Channel{
 		BalanceUpdatedTime: common.GetTimestamp(),
 		Balance:            balance,
@@ -622,6 +622,44 @@ func (channel *Channel) UpdateBalance(balance float64) {
 	if err != nil {
 		common.SysLog(fmt.Sprintf("failed to update balance: channel_id=%d, error=%v", channel.Id, err))
 	}
+	return err
+}
+
+func (channel *Channel) SetLocalBalance(balance float64) error {
+	setting := channel.GetSetting()
+	setting.LocalBalanceEnabled = true
+	channel.SetSetting(setting)
+	channel.Balance = balance
+	channel.BalanceUpdatedTime = common.GetTimestamp()
+	if err := DB.Model(channel).Select("setting", "balance", "balance_updated_time").Updates(channel).Error; err != nil {
+		return err
+	}
+	fresh, err := GetChannelById(channel.Id, true)
+	if err != nil {
+		return err
+	}
+	CacheUpdateChannel(fresh)
+	return nil
+}
+
+func AdjustChannelLocalBalance(id int, quota int) (float64, bool, error) {
+	channel, err := CacheGetChannel(id)
+	if err != nil || !channel.GetSetting().LocalBalanceEnabled || quota == 0 {
+		return 0, false, err
+	}
+	delta := float64(quota) / common.QuotaPerUnit
+	result := DB.Model(&Channel{}).Where("id = ?", id).Updates(map[string]any{
+		"balance":              gorm.Expr("CASE WHEN balance - ? > 0 THEN balance - ? ELSE 0 END", delta, delta),
+		"balance_updated_time": common.GetTimestamp(),
+	})
+	if result.Error != nil {
+		return 0, false, result.Error
+	}
+	var balance float64
+	if err := DB.Model(&Channel{}).Select("balance").Where("id = ?", id).Scan(&balance).Error; err != nil {
+		return 0, false, err
+	}
+	return balance, quota > 0 && balance <= 0, nil
 }
 
 func (channel *Channel) Delete() error {

@@ -54,6 +54,24 @@ func EnableChannel(channelId int, usingKey string, channelName string) {
 	}
 }
 
+func UpdateChannelUsedQuota(channelId int, quota int) {
+	model.UpdateChannelUsedQuota(channelId, quota)
+	balance, exhausted, err := model.AdjustChannelLocalBalance(channelId, quota)
+	if err != nil {
+		common.SysLog(fmt.Sprintf("failed to update local channel balance: channel_id=%d, delta_quota=%d, error=%v", channelId, quota, err))
+		return
+	}
+	if !exhausted {
+		return
+	}
+	channel, err := model.GetChannelById(channelId, true)
+	if err != nil {
+		common.SysLog(fmt.Sprintf("failed to disable channel after local balance reached %.6f: channel_id=%d, error=%v", balance, channelId, err))
+		return
+	}
+	DisableChannel(*types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, "", channel.GetAutoBan()), "本地余额已用尽")
+}
+
 func ShouldDisableChannel(err *types.NewAPIError) bool {
 	if !common.AutomaticDisableChannelEnabled {
 		return false

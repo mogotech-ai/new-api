@@ -14,6 +14,8 @@ type ChannelSettings struct {
 	TaskPluginKey             string `json:"task_plugin_key,omitempty"`
 	ForceFormat               bool   `json:"force_format,omitempty"`
 	ThinkingToContent         bool   `json:"thinking_to_content,omitempty"`
+	LocalBalanceEnabled       bool   `json:"local_balance_enabled,omitempty"`
+	LogRequestResponseEnabled bool   `json:"log_request_response_enabled,omitempty"`
 	Proxy                     string `json:"proxy"`
 	PassThroughBodyEnabled    bool   `json:"pass_through_body_enabled,omitempty"`
 	ResponsesWebSocketEnabled bool   `json:"responses_websocket_enabled,omitempty"`

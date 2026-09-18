@@ -260,6 +260,8 @@ export const channelFormSchema = z
     // Channel extra settings (stored in setting JSON, not sent directly)
     force_format: z.boolean().optional(),
     thinking_to_content: z.boolean().optional(),
+    local_balance_enabled: z.boolean().optional(),
+    log_request_response_enabled: z.boolean().optional(),
     proxy: z
       .string()
       .optional()
@@ -453,6 +455,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   // Channel extra settings
   force_format: false,
   thinking_to_content: false,
+  local_balance_enabled: false,
+  log_request_response_enabled: false,
   proxy: '',
   http_protocol: HTTP_PROTOCOL_AUTO,
   http2_connection_shards: 1,
@@ -496,6 +500,8 @@ export function transformChannelToFormDefaults(
     task_plugin_key: '',
     force_format: false,
     thinking_to_content: false,
+    local_balance_enabled: false,
+    log_request_response_enabled: false,
     proxy: '',
     http_protocol: HTTP_PROTOCOL_AUTO as 'auto' | 'http1',
     http2_connection_shards: 1,
@@ -516,6 +522,9 @@ export function transformChannelToFormDefaults(
         task_plugin_key: parsed.task_plugin_key || '',
         force_format: parsed.force_format || false,
         thinking_to_content: parsed.thinking_to_content || false,
+        local_balance_enabled: parsed.local_balance_enabled === true,
+        log_request_response_enabled:
+          parsed.log_request_response_enabled === true,
         proxy: parsed.proxy || '',
         http_protocol: protocol,
         http2_connection_shards: protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
@@ -644,6 +653,9 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
         : undefined,
     force_format: formData.force_format || false,
     thinking_to_content: formData.thinking_to_content || false,
+    local_balance_enabled: formData.local_balance_enabled === true,
+    log_request_response_enabled:
+      formData.log_request_response_enabled === true,
     proxy: formData.proxy?.trim() || '',
     pass_through_body_enabled:
       formData.type !== CHANNEL_TYPE_ADVANCED_CUSTOM &&

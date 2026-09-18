@@ -32,6 +32,10 @@ func TestChannelStatusRoutesUseExpectedPermissions(t *testing.T) {
 	assertChannelRoutePermission(t, http.MethodPut, "/", authz.ChannelWrite, controller.UpdateChannel)
 }
 
+func TestChannelBalanceSetRouteUsesOperatePermission(t *testing.T) {
+	assertChannelRoutePermission(t, http.MethodPost, "/update_balance/:id", authz.ChannelOperate, controller.SetChannelBalance)
+}
+
 func TestChannelDeleteRoutesUseSensitiveWritePermission(t *testing.T) {
 	assertChannelRoutePermission(t, http.MethodDelete, "/:id", authz.ChannelSensitiveWrite, controller.DeleteChannel)
 	assertChannelRoutePermission(t, http.MethodPost, "/batch", authz.ChannelSensitiveWrite, controller.DeleteChannelBatch)

@@ -16,6 +16,7 @@ import (
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
 
 func TestChannelValidateSettingsRejectsInvalidHTTPTransport(t *testing.T) {
@@ -128,7 +129,7 @@ func TestInferencePresetSettingsAndDatabaseRoundTrip(t *testing.T) {
 				}
 				driver = postgres.Open(dsn)
 			}
-			db, err := gorm.Open(driver, &gorm.Config{})
+			db, err := gorm.Open(driver, &gorm.Config{NamingStrategy: schema.NamingStrategy{TablePrefix: "relay_feature_test_"}})
 			require.NoError(t, err)
 			sqlDB, err := db.DB()
 			require.NoError(t, err)
@@ -192,6 +193,76 @@ func TestInferencePresetSettingsAndDatabaseRoundTrip(t *testing.T) {
 					}
 				})
 			}
+		})
+	}
+}
+
+func TestLocalBalanceAndRelayPayloadDatabaseMatrix(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			var driver gorm.Dialector
+			switch dialect {
+			case "sqlite":
+				driver = sqlite.Open(filepath.Join(t.TempDir(), "relay-payload.db"))
+			case "mysql":
+				dsn := os.Getenv("TEST_MYSQL_DSN")
+				if dsn == "" {
+					t.Skip("TEST_MYSQL_DSN is not configured")
+				}
+				driver = mysql.Open(dsn)
+			case "postgres":
+				dsn := os.Getenv("TEST_POSTGRES_DSN")
+				if dsn == "" {
+					t.Skip("TEST_POSTGRES_DSN is not configured")
+				}
+				driver = postgres.Open(dsn)
+			}
+			db, err := gorm.Open(driver, &gorm.Config{})
+			require.NoError(t, err)
+			sqlDB, err := db.DB()
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+			require.NoError(t, db.Migrator().DropTable(&Channel{}, &RelayPayload{}))
+			t.Cleanup(func() {
+				require.NoError(t, db.Migrator().DropTable(&Channel{}, &RelayPayload{}))
+			})
+			previousDB, previousCache := DB, common.MemoryCacheEnabled
+			DB, common.MemoryCacheEnabled = db, false
+			t.Cleanup(func() { DB, common.MemoryCacheEnabled = previousDB, previousCache })
+			require.NoError(t, db.AutoMigrate(&Channel{}))
+			channel := &Channel{Name: "budget", Key: "key", Balance: 1}
+			channel.SetSetting(dto.ChannelSettings{LocalBalanceEnabled: true})
+			require.NoError(t, db.Create(channel).Error)
+			for range 2 {
+				require.NoError(t, db.AutoMigrate(&Channel{}, &RelayPayload{}))
+			}
+			var migrated Channel
+			require.NoError(t, db.First(&migrated, channel.Id).Error)
+			assert.Equal(t, channel.Name, migrated.Name)
+			originalQuotaPerUnit := common.QuotaPerUnit
+			common.QuotaPerUnit = 500_000
+			t.Cleanup(func() { common.QuotaPerUnit = originalQuotaPerUnit })
+
+			balance, exhausted, err := AdjustChannelLocalBalance(channel.Id, 250_000)
+			require.NoError(t, err)
+			assert.InDelta(t, 0.5, balance, 1e-9)
+			assert.False(t, exhausted)
+			balance, exhausted, err = AdjustChannelLocalBalance(channel.Id, 300_000)
+			require.NoError(t, err)
+			assert.Zero(t, balance)
+			assert.True(t, exhausted)
+			balance, exhausted, err = AdjustChannelLocalBalance(channel.Id, -100_000)
+			require.NoError(t, err)
+			assert.InDelta(t, 0.2, balance, 1e-9)
+			assert.False(t, exhausted)
+
+			payload := &RelayPayload{RequestId: "req-1", ChannelId: channel.Id, CreatedAt: 1, RequestBody: `{"model":"test"}`}
+			require.NoError(t, SaveRelayPayload(payload))
+			payload.ResponseBody = `{"ok":true}`
+			require.NoError(t, SaveRelayPayload(payload))
+			stored, err := GetRelayPayload("req-1")
+			require.NoError(t, err)
+			assert.Equal(t, `{"ok":true}`, stored.ResponseBody)
 		})
 	}
 }

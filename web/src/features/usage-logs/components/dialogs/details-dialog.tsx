@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useQuery } from '@tanstack/react-query'
 import type { TFunction } from 'i18next'
 /*
 Copyright (C) 2023-2026 QuantumNous
@@ -52,6 +53,10 @@ import {
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import {
+  CodeBlock,
+  CodeBlockCopyButton,
+} from '@/components/ai-elements/code-block'
 import { Dialog } from '@/components/dialog'
 import { StatusBadge, type StatusBadgeProps } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
@@ -66,6 +71,7 @@ import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 import { formatLogQuota, formatTokens, formatUseTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
+import { getRelayPayload } from '../../api'
 import { AuditDetailFields } from '../../audit/components/audit-detail-fields'
 import type { UsageLog } from '../../data/schema'
 import {
@@ -479,6 +485,13 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
   const other = parseLogOther(props.log.other)
   const typeConfig = getLogTypeConfig(props.log.type)
+  const payloadQuery = useQuery({
+    queryKey: ['usage-logs', 'relay-payload', props.log.request_id],
+    queryFn: () => getRelayPayload(props.log.request_id),
+    enabled: props.open && props.isRoot && props.log.request_id !== '',
+    retry: false,
+    staleTime: Infinity,
+  })
 
   const isViolation = isViolationFeeLog(other)
   const isRefund = props.log.type === 6
@@ -639,7 +652,9 @@ export function DetailsDialog(props: DetailsDialogProps) {
       contentClassName={cn(
         'min-w-0 overflow-hidden',
         'max-sm:max-h-[calc(100dvh-1.5rem)] max-sm:w-[calc(100vw-1.5rem)] max-sm:max-w-[calc(100vw-1.5rem)] max-sm:p-4',
-        isTieredBilling ? 'sm:max-w-4xl lg:max-w-5xl' : 'sm:max-w-lg'
+        isTieredBilling || payloadQuery.data
+          ? 'sm:max-w-4xl lg:max-w-5xl'
+          : 'sm:max-w-lg'
       )}
       headerClassName='max-sm:gap-1'
       titleClassName='flex items-center gap-2 text-base'
@@ -942,6 +957,33 @@ export function DetailsDialog(props: DetailsDialogProps) {
                 mono
               />
             ) : null}
+          </DetailSection>
+        ) : null}
+
+        {props.isRoot && payloadQuery.data ? (
+          <DetailSection label={t('Request and response bodies')}>
+            <CodeBlock
+              code={payloadQuery.data.request_body}
+              language='json'
+              maxExpandedLines={24}
+              showLineNumbers
+              title={`${t('Request')}${payloadQuery.data.request_body_truncated ? ` ${t('(truncated)')}` : ''}`}
+            >
+              <CodeBlockCopyButton />
+            </CodeBlock>
+            <CodeBlock
+              code={payloadQuery.data.response_body}
+              language={
+                payloadQuery.data.response_content_type.includes('event-stream')
+                  ? 'text'
+                  : 'json'
+              }
+              maxExpandedLines={24}
+              showLineNumbers
+              title={`${t('Response')}${payloadQuery.data.response_body_truncated ? ` ${t('(truncated)')}` : ''}`}
+            >
+              <CodeBlockCopyButton />
+            </CodeBlock>
           </DetailSection>
         ) : null}
 
