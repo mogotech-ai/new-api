@@ -150,6 +150,7 @@ function PayloadBodyViewer(props: {
         showLineNumbers
         showToolbar
         title={props.title}
+        wrapLines
       >
         <Button
           onClick={() => setOpen(true)}
@@ -175,6 +176,7 @@ function PayloadBodyViewer(props: {
           showLineNumbers
           showToolbar
           title={props.title}
+          wrapLines
         >
           <CodeBlockCopyButton />
         </CodeBlock>

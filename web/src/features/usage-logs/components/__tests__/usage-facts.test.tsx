@@ -154,6 +154,13 @@ test('shows stored relay request and response bodies only in root details', () =
   expect(screen.getByRole('textbox', { name: 'Response' })).toHaveTextContent(
     '"ok": true'
   )
+  // Long single-line bodies (for example a model reply in "content") wrap
+  // instead of scrolling sideways.
+  expect(
+    screen
+      .getByRole('textbox', { name: 'Response' })
+      .querySelector('.cm-lineWrapping')
+  ).not.toBeNull()
   fireEvent.click(screen.getAllByRole('button', { name: 'View details' })[0])
   expect(
     screen.getByRole('dialog', { name: 'Request (truncated)' })

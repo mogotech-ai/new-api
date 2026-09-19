@@ -72,6 +72,8 @@ type CodeBlockProps = HTMLAttributes<HTMLDivElement> & {
   showLineNumbers?: boolean
   showToolbar?: boolean
   title?: ReactNode
+  /** Soft-wrap long lines instead of scrolling horizontally. */
+  wrapLines?: boolean
 }
 
 type CodeBlockEditorProps = Omit<
@@ -101,6 +103,7 @@ type CodeMirrorCodeViewProps = {
   rows?: number
   showLineNumbers?: boolean
   value: string
+  wrapLines?: boolean
 }
 
 type CodeBlockFrameProps = Omit<HTMLAttributes<HTMLDivElement>, 'title'> & {
@@ -285,6 +288,7 @@ function getCodeMirrorExtensions(options: {
   placeholder?: string
   readOnly: boolean
   showLineNumbers: boolean
+  wrapLines: boolean
 }): Extension[] {
   const extensions: Extension[] = [
     getCodeMirrorLanguageExtension(options.language),
@@ -309,6 +313,10 @@ function getCodeMirrorExtensions(options: {
     extensions.unshift(lineNumbers())
   }
 
+  if (options.wrapLines) {
+    extensions.push(EditorView.lineWrapping)
+  }
+
   return extensions
 }
 
@@ -323,6 +331,7 @@ function CodeMirrorCodeView({
   rows = 8,
   showLineNumbers = true,
   value,
+  wrapLines = false,
 }: CodeMirrorCodeViewProps) {
   const editorHostRef = useRef<HTMLDivElement>(null)
   const editorViewRef = useRef<EditorView | null>(null)
@@ -342,8 +351,9 @@ function CodeMirrorCodeView({
         placeholder,
         readOnly,
         showLineNumbers,
+        wrapLines,
       }),
-    [language, placeholder, readOnly, showLineNumbers]
+    [language, placeholder, readOnly, showLineNumbers, wrapLines]
   )
 
   useEffect(() => {
@@ -477,6 +487,7 @@ export const CodeBlock = ({
   showLineNumbers = false,
   showToolbar = false,
   title,
+  wrapLines = false,
   className,
   children,
   ...props
@@ -589,6 +600,7 @@ export const CodeBlock = ({
           rows={Math.min(Math.max(lineCount, 4), maxExpandedLines ?? lineCount)}
           showLineNumbers={showLineNumbers}
           value={code}
+          wrapLines={wrapLines}
         />
       </CodeBlockFrame>
     </CodeBlockContext.Provider>
