@@ -191,3 +191,60 @@ func TestLogQuotaDataSplitsRowsByUseGroupTokenChannelAndNode(t *testing.T) {
 	require.Equal(t, "default", rows[1].UseGroup)
 	require.Equal(t, 25, rows[1].Quota)
 }
+
+func TestAdminQuotaDataReportsMappedUpstreamModel(t *testing.T) {
+	truncateTables(t)
+	CacheQuotaDataLock.Lock()
+	CacheQuotaData = make(map[string]*QuotaData)
+	CacheQuotaDataLock.Unlock()
+
+	direct := QuotaDataLogParams{
+		UserID: 1, Username: "alice", ModelName: "gemini", CreatedAt: 3661,
+		UseGroup: "vip", TokenID: 11, ChannelID: 1, NodeName: "node-a", Quota: 100, TokenUsed: 40,
+	}
+	// The retry lands on a channel that maps gemini to deepseek.
+	mapped := direct
+	mapped.ChannelID = 2
+	mapped.UpstreamModelName = "deepseek"
+	mapped.Quota = 30
+
+	LogQuotaData(direct)
+	LogQuotaData(mapped)
+	SaveQuotaDataCache()
+	// A second flush must add to the mapped row instead of creating a new one.
+	LogQuotaData(mapped)
+	SaveQuotaDataCache()
+
+	var stored int64
+	require.NoError(t, DB.Model(&QuotaData{}).Count(&stored).Error)
+	require.Equal(t, int64(2), stored)
+
+	quotaByModel := func(rows []*QuotaData) map[string]int {
+		result := make(map[string]int)
+		for _, row := range rows {
+			result[row.ModelName] += row.Quota
+		}
+		return result
+	}
+
+	adminRows, err := GetAllQuotaDates(0, 7200, "")
+	require.NoError(t, err)
+	require.Equal(t, map[string]int{"gemini": 100, "deepseek": 60}, quotaByModel(adminRows))
+
+	adminUserRows, err := GetAllQuotaDates(0, 7200, "alice")
+	require.NoError(t, err)
+	require.Equal(t, map[string]int{"gemini": 100, "deepseek": 60}, quotaByModel(adminUserRows))
+
+	// Users keep seeing the model they requested; the mapping stays hidden.
+	selfRows, err := GetQuotaDataByUserId(1, 0, 7200)
+	require.NoError(t, err)
+	require.Equal(t, map[string]int{"gemini": 160}, quotaByModel(selfRows))
+
+	flowRows, err := GetFlowQuotaData(0, 7200, "", 0, common.RoleAdminUser)
+	require.NoError(t, err)
+	require.Len(t, flowRows, 2)
+	require.Equal(t, "gemini", flowRows[0].ModelName)
+	require.Equal(t, 1, flowRows[0].ChannelID)
+	require.Equal(t, "deepseek", flowRows[1].ModelName)
+	require.Equal(t, 2, flowRows[1].ChannelID)
+}

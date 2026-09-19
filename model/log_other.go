@@ -180,6 +180,17 @@ func (o *LogOther) Snapshot() map[string]any {
 	return o.toMap()
 }
 
+// upstreamModelName returns the mapped upstream model that billing writers
+// record under the public "upstream_model_name" key, or "" when the request
+// was not model-mapped.
+func (o *LogOther) upstreamModelName() string {
+	if o == nil {
+		return ""
+	}
+	name, _ := o.public["upstream_model_name"].(string)
+	return name
+}
+
 func (o *LogOther) MarshalJSON() ([]byte, error) {
 	return common.Marshal(o.toMap())
 }

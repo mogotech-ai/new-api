@@ -57,12 +57,12 @@ func getSelfFlowQuotaData(startTime int64, endTime int64, userID int) ([]*FlowQu
 func getAdminFlowQuotaData(startTime int64, endTime int64, username string) ([]*FlowQuotaData, error) {
 	rows := make([]*FlowQuotaData, 0)
 	query := flowQuotaBaseQuery(startTime, endTime).
-		Select("user_id, username, use_group, model_name, channel_id, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used")
+		Select("user_id, username, use_group, " + adminQuotaModelExpr + " as model_name, channel_id, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used")
 	if username != "" {
 		query = query.Where("username = ?", username)
 	}
 	err := query.
-		Group("user_id, username, use_group, model_name, channel_id").
+		Group("user_id, username, use_group, " + adminQuotaModelExpr + ", channel_id").
 		Order("quota DESC").
 		Find(&rows).Error
 	if err != nil {
@@ -74,12 +74,12 @@ func getAdminFlowQuotaData(startTime int64, endTime int64, username string) ([]*
 func getRootFlowQuotaData(startTime int64, endTime int64, username string) ([]*FlowQuotaData, error) {
 	rows := make([]*FlowQuotaData, 0)
 	query := flowQuotaBaseQuery(startTime, endTime).
-		Select("user_id, username, node_name, token_id, use_group, model_name, channel_id, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used")
+		Select("user_id, username, node_name, token_id, use_group, " + adminQuotaModelExpr + " as model_name, channel_id, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used")
 	if username != "" {
 		query = query.Where("username = ?", username)
 	}
 	err := query.
-		Group("user_id, username, node_name, token_id, use_group, model_name, channel_id").
+		Group("user_id, username, node_name, token_id, use_group, " + adminQuotaModelExpr + ", channel_id").
 		Order("quota DESC").
 		Find(&rows).Error
 	if err != nil {
