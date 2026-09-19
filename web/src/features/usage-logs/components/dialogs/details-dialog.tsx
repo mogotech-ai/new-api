@@ -131,8 +131,7 @@ function PayloadBodyViewer(props: {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const isJson = props.contentType.toLowerCase().includes('json')
-  const language = isJson ? 'json' : 'text'
-  const code = useMemo(() => {
+  const formatted = useMemo(() => {
     if (!isJson) return props.body
     try {
       return JSON.stringify(JSON.parse(props.body), null, 2)
@@ -140,6 +139,24 @@ function PayloadBodyViewer(props: {
       return props.body
     }
   }, [isJson, props.body])
+  // Model replies arrive as one JSON string full of \n escapes. Decoding each
+  // string literal shows them as real line breaks; the result is for reading
+  // only and is no longer valid JSON, so it is shown as plain text. Literals
+  // are matched whole, so an escaped backslash before n stays as written.
+  const code = useMemo(
+    () =>
+      formatted.replaceAll(/"(?:[^"\\\n]|\\.)*"/g, (literal) => {
+        if (!literal.includes('\\')) return literal
+        try {
+          return `"${JSON.parse(literal)}"`
+        } catch {
+          return literal
+        }
+      }),
+    [formatted]
+  )
+  // Keep JSON highlighting when there was nothing to decode.
+  const language = isJson && code === formatted ? 'json' : 'text'
 
   return (
     <>

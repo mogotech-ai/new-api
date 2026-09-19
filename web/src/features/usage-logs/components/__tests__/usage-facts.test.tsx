@@ -126,7 +126,7 @@ test('shows stored relay request and response bodies only in root details', () =
     request_content_type: 'application/json',
     response_content_type: 'application/json',
     request_body: '{"model":"test"}',
-    response_body: '{"ok":true}',
+    response_body: '{"ok":true,"content":"line one\\nline two"}',
     request_body_truncated: true,
     response_body_truncated: false,
   })
@@ -154,6 +154,15 @@ test('shows stored relay request and response bodies only in root details', () =
   expect(screen.getByRole('textbox', { name: 'Response' })).toHaveTextContent(
     '"ok": true'
   )
+  // Escaped line breaks inside a string value render as real lines.
+  const responseLines = Array.from(
+    screen
+      .getByRole('textbox', { name: 'Response' })
+      .querySelectorAll('.cm-line'),
+    (line) => line.textContent
+  )
+  expect(responseLines).toContain('  "content": "line one')
+  expect(responseLines).toContain('line two"')
   // Long single-line bodies (for example a model reply in "content") wrap
   // instead of scrolling sideways.
   expect(
