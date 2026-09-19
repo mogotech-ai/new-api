@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -258,11 +259,14 @@ func TestLocalBalanceAndRelayPayloadDatabaseMatrix(t *testing.T) {
 
 			payload := &RelayPayload{RequestId: "req-1", ChannelId: channel.Id, CreatedAt: 1, RequestBody: `{"model":"test"}`}
 			require.NoError(t, SaveRelayPayload(payload))
-			payload.ResponseBody = `{"ok":true}`
+			// Bodies are stored whole, past the 64 KiB a MySQL TEXT column holds.
+			responseBody := RelayPayloadBody(strings.Repeat("x", 1<<20))
+			payload.ResponseBody = responseBody
 			require.NoError(t, SaveRelayPayload(payload))
 			stored, err := GetRelayPayload("req-1")
 			require.NoError(t, err)
-			assert.Equal(t, `{"ok":true}`, stored.ResponseBody)
+			assert.Equal(t, RelayPayloadBody(`{"model":"test"}`), stored.RequestBody)
+			assert.Equal(t, responseBody, stored.ResponseBody)
 		})
 	}
 }

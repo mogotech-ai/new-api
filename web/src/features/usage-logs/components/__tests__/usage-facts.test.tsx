@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import i18next from 'i18next'
 import { afterEach, beforeAll, describe, expect, test } from 'vitest'
 
@@ -39,6 +39,7 @@ const i18nKeys = {
   'Request and response bodies': 'Request and response bodies',
   Request: 'Request',
   Response: 'Response',
+  'View details': 'View details',
   '(truncated)': '(truncated)',
 }
 
@@ -146,6 +147,17 @@ test('shows stored relay request and response bodies only in root details', () =
     screen.getByRole('textbox', { name: 'Request (truncated)' })
   ).toBeVisible()
   expect(screen.getByRole('textbox', { name: 'Response' })).toBeVisible()
+  // The stored bodies are compact; the spaced form proves they were re-indented.
+  expect(
+    screen.getByRole('textbox', { name: 'Request (truncated)' })
+  ).toHaveTextContent('"model": "test"')
+  expect(screen.getByRole('textbox', { name: 'Response' })).toHaveTextContent(
+    '"ok": true'
+  )
+  fireEvent.click(screen.getAllByRole('button', { name: 'View details' })[0])
+  expect(
+    screen.getByRole('dialog', { name: 'Request (truncated)' })
+  ).toBeVisible()
   queryClient.clear()
 })
 

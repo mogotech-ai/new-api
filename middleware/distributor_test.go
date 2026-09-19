@@ -29,20 +29,19 @@ func TestChannelMatchesExpectedTaskPluginUsesGenericChannelSetting(t *testing.T)
 	assert.False(t, channelMatchesExpectedTaskPlugin(nil, channel, ""))
 }
 
-func TestRelayPayloadWriterCapturesBoundedTextWithoutChangingResponse(t *testing.T) {
+func TestRelayPayloadWriterCapturesWholeTextWithoutChangingResponse(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	common.SetContextKey(ctx, constant.ContextKeyChannelSetting, dto.ChannelSettings{LogRequestResponseEnabled: true})
 	writer := &relayPayloadWriter{ResponseWriter: ctx.Writer, ctx: ctx}
 	writer.Header().Set("Content-Type", "application/json")
-	body := bytes.Repeat([]byte("x"), maxRelayPayloadBytes+10)
+	body := bytes.Repeat([]byte("x"), 1<<20)
 
 	written, err := writer.Write(body)
 	require.NoError(t, err)
 	assert.Equal(t, len(body), written)
 	assert.Equal(t, body, recorder.Body.Bytes())
-	assert.Len(t, writer.body.Bytes(), maxRelayPayloadBytes)
-	assert.True(t, writer.truncated)
+	assert.Equal(t, body, writer.body.Bytes())
 }
 
 func TestChannelMatchesExpectedTaskPluginUsesPinnedLegacyIndex(t *testing.T) {

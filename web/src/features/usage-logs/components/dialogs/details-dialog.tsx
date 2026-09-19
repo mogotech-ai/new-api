@@ -51,6 +51,7 @@ import {
   Info,
   LogIn,
 } from 'lucide-react'
+import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -120,6 +121,66 @@ function timingTextColorClass(
 function formatRatio(ratio: number | undefined): string {
   if (ratio == null) return '-'
   return ratio.toFixed(4)
+}
+
+function PayloadBodyViewer(props: {
+  body: string
+  contentType: string
+  title: string
+}) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const isJson = props.contentType.toLowerCase().includes('json')
+  const language = isJson ? 'json' : 'text'
+  const code = useMemo(() => {
+    if (!isJson) return props.body
+    try {
+      return JSON.stringify(JSON.parse(props.body), null, 2)
+    } catch {
+      return props.body
+    }
+  }, [isJson, props.body])
+
+  return (
+    <>
+      <CodeBlock
+        code={code}
+        language={language}
+        maxExpandedLines={8}
+        showLineNumbers
+        showToolbar
+        title={props.title}
+      >
+        <Button
+          onClick={() => setOpen(true)}
+          size='sm'
+          type='button'
+          variant='outline'
+        >
+          {t('View details')}
+        </Button>
+        <CodeBlockCopyButton />
+      </CodeBlock>
+      <Dialog
+        contentClassName='sm:max-w-5xl'
+        contentHeight='calc(100vh - 10rem)'
+        onOpenChange={setOpen}
+        open={open}
+        title={props.title}
+      >
+        <CodeBlock
+          code={code}
+          enableCollapse={false}
+          language={language}
+          showLineNumbers
+          showToolbar
+          title={props.title}
+        >
+          <CodeBlockCopyButton />
+        </CodeBlock>
+      </Dialog>
+    </>
+  )
 }
 
 function getUsageBillingPathLabel(
@@ -962,28 +1023,16 @@ export function DetailsDialog(props: DetailsDialogProps) {
 
         {props.isRoot && payloadQuery.data ? (
           <DetailSection label={t('Request and response bodies')}>
-            <CodeBlock
-              code={payloadQuery.data.request_body}
-              language='json'
-              maxExpandedLines={24}
-              showLineNumbers
+            <PayloadBodyViewer
+              body={payloadQuery.data.request_body}
+              contentType={payloadQuery.data.request_content_type}
               title={`${t('Request')}${payloadQuery.data.request_body_truncated ? ` ${t('(truncated)')}` : ''}`}
-            >
-              <CodeBlockCopyButton />
-            </CodeBlock>
-            <CodeBlock
-              code={payloadQuery.data.response_body}
-              language={
-                payloadQuery.data.response_content_type.includes('event-stream')
-                  ? 'text'
-                  : 'json'
-              }
-              maxExpandedLines={24}
-              showLineNumbers
+            />
+            <PayloadBodyViewer
+              body={payloadQuery.data.response_body}
+              contentType={payloadQuery.data.response_content_type}
               title={`${t('Response')}${payloadQuery.data.response_body_truncated ? ` ${t('(truncated)')}` : ''}`}
-            >
-              <CodeBlockCopyButton />
-            </CodeBlock>
+            />
           </DetailSection>
         ) : null}
 

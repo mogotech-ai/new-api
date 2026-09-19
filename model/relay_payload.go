@@ -3,20 +3,36 @@ package model
 import (
 	"context"
 
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/schema"
 )
 
+// RelayPayloadBody holds a whole request or response body. It maps to longtext
+// on MySQL, where a bare TEXT holds only 64 KiB, and to the unbounded text type
+// on PostgreSQL and SQLite.
+type RelayPayloadBody string
+
+func (RelayPayloadBody) GormDBDataType(db *gorm.DB, _ *schema.Field) string {
+	if db.Dialector.Name() == "mysql" {
+		return "longtext"
+	}
+	return "text"
+}
+
 type RelayPayload struct {
-	Id                    int64  `json:"id"`
-	RequestId             string `json:"request_id" gorm:"size:64;uniqueIndex"`
-	ChannelId             int    `json:"channel_id" gorm:"index"`
-	CreatedAt             int64  `json:"created_at" gorm:"bigint;index"`
-	RequestContentType    string `json:"request_content_type" gorm:"size:128"`
-	ResponseContentType   string `json:"response_content_type" gorm:"size:128"`
-	RequestBody           string `json:"request_body" gorm:"type:text"`
-	ResponseBody          string `json:"response_body" gorm:"type:text"`
-	RequestBodyTruncated  bool   `json:"request_body_truncated"`
-	ResponseBodyTruncated bool   `json:"response_body_truncated"`
+	Id                  int64            `json:"id"`
+	RequestId           string           `json:"request_id" gorm:"size:64;uniqueIndex"`
+	ChannelId           int              `json:"channel_id" gorm:"index"`
+	CreatedAt           int64            `json:"created_at" gorm:"bigint;index"`
+	RequestContentType  string           `json:"request_content_type" gorm:"size:128"`
+	ResponseContentType string           `json:"response_content_type" gorm:"size:128"`
+	RequestBody         RelayPayloadBody `json:"request_body"`
+	ResponseBody        RelayPayloadBody `json:"response_body"`
+	// The truncated flags are only set on rows written while bodies were
+	// capped at 32 KiB; new rows always leave them false.
+	RequestBodyTruncated  bool `json:"request_body_truncated"`
+	ResponseBodyTruncated bool `json:"response_body_truncated"`
 }
 
 func SaveRelayPayload(payload *RelayPayload) error {

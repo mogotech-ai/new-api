@@ -15,13 +15,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const maxRelayPayloadBytes = 32 << 10
-
+// ponytail: bodies are stored whole, so a logged response is buffered in memory
+// until the request ends. Logging is opt-in per channel; add a configurable cap
+// if large responses on logged channels start to pressure memory.
 type relayPayloadWriter struct {
 	gin.ResponseWriter
-	ctx       *gin.Context
-	body      bytes.Buffer
-	truncated bool
+	ctx  *gin.Context
+	body bytes.Buffer
 }
 
 func relayPayloadEnabled(c *gin.Context) bool {
@@ -41,11 +41,7 @@ func relayPayloadTextContent(contentType string) bool {
 
 func (w *relayPayloadWriter) Write(data []byte) (int, error) {
 	if relayPayloadEnabled(w.ctx) && relayPayloadTextContent(w.Header().Get("Content-Type")) {
-		remaining := maxRelayPayloadBytes - w.body.Len()
-		if remaining > 0 {
-			w.body.Write(data[:min(len(data), remaining)])
-		}
-		w.truncated = w.truncated || len(data) > remaining
+		w.body.Write(data)
 	}
 	return w.ResponseWriter.Write(data)
 }
@@ -69,13 +65,12 @@ func RelayPayloadLog() gin.HandlerFunc {
 		}
 
 		payload := &model.RelayPayload{
-			RequestId:             requestId,
-			ChannelId:             common.GetContextKeyInt(c, constant.ContextKeyChannelId),
-			CreatedAt:             common.GetTimestamp(),
-			RequestContentType:    c.Request.Header.Get("Content-Type"),
-			ResponseContentType:   writer.Header().Get("Content-Type"),
-			ResponseBody:          strings.ToValidUTF8(writer.body.String(), "?"),
-			ResponseBodyTruncated: writer.truncated,
+			RequestId:           requestId,
+			ChannelId:           common.GetContextKeyInt(c, constant.ContextKeyChannelId),
+			CreatedAt:           common.GetTimestamp(),
+			RequestContentType:  c.Request.Header.Get("Content-Type"),
+			ResponseContentType: writer.Header().Get("Content-Type"),
+			ResponseBody:        model.RelayPayloadBody(strings.ToValidUTF8(writer.body.String(), "?")),
 		}
 
 		if relayPayloadTextContent(payload.RequestContentType) {
@@ -83,11 +78,10 @@ func RelayPayloadLog() gin.HandlerFunc {
 			if err == nil {
 				reader, readerErr := storage.NewReader()
 				if readerErr == nil {
-					data, readErr := io.ReadAll(io.LimitReader(reader, maxRelayPayloadBytes+1))
+					data, readErr := io.ReadAll(reader)
 					_ = reader.Close()
 					if readErr == nil {
-						payload.RequestBodyTruncated = len(data) > maxRelayPayloadBytes
-						payload.RequestBody = strings.ToValidUTF8(string(data[:min(len(data), maxRelayPayloadBytes)]), "?")
+						payload.RequestBody = model.RelayPayloadBody(strings.ToValidUTF8(string(data), "?"))
 					}
 				}
 			}
