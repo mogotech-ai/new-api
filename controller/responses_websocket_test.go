@@ -304,13 +304,23 @@ func (fixture *responsesWSBillingTest) closeAndWait(t *testing.T) {
 	// Redis write is asynchronous, see waitPerfCounters.
 }
 
-// waitPerfCounters waits for the asynchronous health samples of the fixture
-// model to reach wantRequests and returns the request and success counters.
-func waitPerfCounters(t *testing.T, wantRequests int64) (requests, successes int64) {
+// Health samples are attributed to the model that served the request: the
+// fixture channel maps ws-billing to gpt-4o, while a request rejected before
+// any channel was selected keeps the requested ws-billing.
+const (
+	perfServedModelKeys    = "perf:gpt-4o:*"
+	perfRequestedModelKeys = "perf:ws-billing:*"
+	perfAnyModelKeys       = "perf:*"
+)
+
+// waitPerfCounters waits for the asynchronous health samples matching
+// keysPattern to reach wantRequests and returns the request and success
+// counters.
+func waitPerfCounters(t *testing.T, keysPattern string, wantRequests int64) (requests, successes int64) {
 	t.Helper()
 	require.Eventually(t, func() bool {
 		requests, successes = 0, 0
-		keys, err := common.RDB.Keys(context.Background(), "perf:ws-billing:*").Result()
+		keys, err := common.RDB.Keys(context.Background(), keysPattern).Result()
 		if err != nil {
 			return false
 		}
@@ -485,12 +495,12 @@ func TestResponsesInterruptedStreamHealth(t *testing.T) {
 			fixture.closeAndWait(t)
 			assertResponsesWSAccounting(t, fixture, []int{1000})
 			if scenario == "sse client cancel" {
-				keys, err := common.RDB.Keys(context.Background(), "perf:ws-billing:*").Result()
+				keys, err := common.RDB.Keys(context.Background(), perfAnyModelKeys).Result()
 				require.NoError(t, err)
 				assert.Empty(t, keys, "client cancellation must not affect model health")
 				return
 			}
-			requests, successes := waitPerfCounters(t, 1)
+			requests, successes := waitPerfCounters(t, perfServedModelKeys, 1)
 			assert.Equal(t, int64(1), requests)
 			assert.Zero(t, successes)
 		})
@@ -741,7 +751,7 @@ func TestResponsesWebSocketDisconnectSettlesDeliveredOutputOnce(t *testing.T) {
 	assert.Equal(t, "hello", delta["delta"])
 	fixture.closeAndWait(t)
 	assertResponsesWSAccounting(t, fixture, []int{1})
-	keys, err := common.RDB.Keys(context.Background(), "perf:ws-billing:*").Result()
+	keys, err := common.RDB.Keys(context.Background(), perfAnyModelKeys).Result()
 	require.NoError(t, err)
 	assert.Empty(t, keys, "client cancellation must not affect model health")
 }
@@ -984,7 +994,7 @@ func TestResponsesStreamOutcomesPreserveAccounting(t *testing.T) {
 				if tc.ignored {
 					expectedRequests--
 				}
-				requests, successes := waitPerfCounters(t, expectedRequests)
+				requests, successes := waitPerfCounters(t, perfServedModelKeys, expectedRequests)
 				assert.Equal(t, expectedRequests, requests)
 				assert.Equal(t, int64(1), successes)
 			})
@@ -1042,12 +1052,12 @@ func TestResponsesHTTPHealthCountsFinalResult(t *testing.T) {
 				assert.Equal(t, http.StatusOK, response.StatusCode)
 			}
 			if tc.ignored {
-				keys, err := common.RDB.Keys(context.Background(), "perf:ws-billing:*").Result()
+				keys, err := common.RDB.Keys(context.Background(), perfAnyModelKeys).Result()
 				require.NoError(t, err)
 				assert.Empty(t, keys)
 				return
 			}
-			requests, successes := waitPerfCounters(t, 1)
+			requests, successes := waitPerfCounters(t, perfServedModelKeys, 1)
 			assert.Equal(t, int64(1), requests)
 			if tc.success {
 				assert.Equal(t, int64(1), successes)
@@ -1308,12 +1318,12 @@ func TestResponsesWebSocketPreRoutingRejectionsFollowHealthClassification(t *tes
 			fixture.closeAndWait(t)
 			assertResponsesWSAccounting(t, fixture, nil)
 			if !tc.sampled {
-				keys, err := common.RDB.Keys(context.Background(), "perf:ws-billing:*").Result()
+				keys, err := common.RDB.Keys(context.Background(), perfAnyModelKeys).Result()
 				require.NoError(t, err)
 				assert.Empty(t, keys, "a business rejection must not affect model health")
 				return
 			}
-			requests, successes := waitPerfCounters(t, 1)
+			requests, successes := waitPerfCounters(t, perfRequestedModelKeys, 1)
 			assert.Equal(t, int64(1), requests)
 			assert.Zero(t, successes)
 		})

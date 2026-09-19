@@ -49,6 +49,34 @@ func TestClassifyRelayOutcome(t *testing.T) {
 	assert.Equal(t, OutcomeIgnored, ClassifyRelayOutcome(context.Background(), &relaycommon.RelayInfo{PerformanceBusinessRejection: true}, nil))
 }
 
+func TestRecordRelayResultUsesServedModel(t *testing.T) {
+	hotBuckets.Clear()
+	t.Cleanup(hotBuckets.Clear)
+	modelsIn := func() []string {
+		var names []string
+		hotBuckets.Range(func(key, _ any) bool {
+			names = append(names, key.(bucketKey).model)
+			return true
+		})
+		return names
+	}
+	now := time.Now()
+
+	// A retry landed on a channel that maps the requested model.
+	RecordRelayResult(context.Background(), &relaycommon.RelayInfo{
+		OriginModelName: "gemini", UsingGroup: "a", StartTime: now,
+		ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "deepseek", IsModelMapped: true},
+	}, nil)
+	assert.Equal(t, []string{"deepseek"}, modelsIn())
+
+	// No channel was ever selected, so the requested model is kept.
+	hotBuckets.Clear()
+	RecordRelayResult(context.Background(), &relaycommon.RelayInfo{
+		OriginModelName: "gemini", UsingGroup: "a", StartTime: now,
+	}, types.NewErrorWithStatusCode(errors.New("disabled"), types.ErrorCodeGetChannelFailed, 403))
+	assert.Equal(t, []string{"gemini"}, modelsIn())
+}
+
 func TestStreamOutcomeClassification(t *testing.T) {
 	for _, tc := range []struct {
 		name string

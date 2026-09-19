@@ -51,8 +51,16 @@ func RecordRelayResult(ctx context.Context, info *relaycommon.RelayInfo, apiErr 
 	if generationMs <= 0 {
 		generationMs = latencyMs
 	}
+	// Attribute the sample to the model that actually served the final attempt,
+	// so traffic a retry moved to a mapped channel (gemini -> deepseek) shows
+	// under the mapped model. ChannelMeta is rebuilt per attempt and is nil when
+	// no channel was selected.
+	modelName := info.OriginModelName
+	if info.ChannelMeta != nil && info.IsModelMapped && info.UpstreamModelName != "" {
+		modelName = info.UpstreamModelName
+	}
 	Record(Sample{
-		Model:        info.OriginModelName,
+		Model:        modelName,
 		Group:        info.UsingGroup,
 		LatencyMs:    latencyMs,
 		TtftMs:       ttftMs,
