@@ -191,6 +191,46 @@ func TestCopyChannelRejectsInvalidLegacyProxySettings(t *testing.T) {
 	assert.Equal(t, int64(1), channelCount)
 }
 
+func TestCopyChannelResetBalanceTurnsOffLocalBalanceLimit(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.AuditLog{}))
+	for _, tc := range []struct {
+		name         string
+		resetBalance string
+		wantBalance  float64
+		wantLimit    bool
+	}{
+		{name: "reset", resetBalance: "true", wantBalance: 0, wantLimit: false},
+		{name: "keep balance", resetBalance: "false", wantBalance: 5, wantLimit: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			origin := &model.Channel{
+				Type: constant.ChannelTypeOpenAI, Name: "budget " + tc.name, Key: "test-key",
+				Models: "gpt-test", Group: "default", Balance: 5,
+			}
+			origin.SetSetting(dto.ChannelSettings{LocalBalanceEnabled: true})
+			require.NoError(t, db.Create(origin).Error)
+
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", origin.Id)}}
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/api/channel/copy?reset_balance="+tc.resetBalance, nil)
+
+			CopyChannel(ctx)
+
+			require.Contains(t, recorder.Body.String(), `"success":true`)
+			var copied model.Channel
+			require.NoError(t, db.Where("name = ?", origin.Name+"_复制").First(&copied).Error)
+			assert.Equal(t, tc.wantBalance, copied.Balance)
+			assert.Equal(t, tc.wantLimit, copied.GetSetting().LocalBalanceEnabled)
+			// The source channel keeps its own limit.
+			var source model.Channel
+			require.NoError(t, db.First(&source, origin.Id).Error)
+			assert.True(t, source.GetSetting().LocalBalanceEnabled)
+		})
+	}
+}
+
 func TestDeleteChannelResetsProxyCacheWhenPreReadFails(t *testing.T) {
 	db := setupModelListControllerTestDB(t)
 	require.NoError(t, db.AutoMigrate(&model.Log{}, &model.AuditLog{}))

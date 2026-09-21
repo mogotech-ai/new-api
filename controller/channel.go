@@ -1594,6 +1594,11 @@ func CopyChannel(c *gin.Context) {
 	if resetBalance {
 		clone.Balance = 0
 		clone.UsedQuota = 0
+		// A zero local balance with the limit still on disables the copy on its
+		// first real request, so the limit waits until a balance is set again.
+		setting := clone.GetSetting()
+		setting.LocalBalanceEnabled = false
+		clone.SetSetting(setting)
 	}
 
 	if err := clone.ValidateSettings(); err != nil {

@@ -295,6 +295,24 @@ test('request and response logging is an explicit channel option', async () => {
   expect(saved[0].log_request_response_enabled).toBe(true)
 })
 
+test('turning off the local balance limit is saved with the channel', async () => {
+  const user = userEvent.setup()
+  const saved: ChannelFormValues[] = []
+  render(
+    <QuickOptionsHarness
+      confirm={() => Promise.resolve(true)}
+      values={{ local_balance_enabled: true }}
+      onSave={(values) => saved.push(values)}
+    />
+  )
+  const limit = screen.getByRole('switch', { name: 'Local balance limit' })
+  expect(limit).toBeChecked()
+  await user.click(limit)
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() => expect(saved).toHaveLength(1))
+  expect(saved[0].local_balance_enabled).toBe(false)
+})
+
 describe('responses websocket quick option', () => {
   const WEBSOCKET_SWITCH = { name: 'Responses WebSocket' }
 

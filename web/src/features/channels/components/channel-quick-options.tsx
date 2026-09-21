@@ -76,6 +76,7 @@ export function ChannelQuickOptions(props: ChannelQuickOptionsProps) {
     modelCheck,
     websocket,
     payloadLog,
+    localBalance,
   ] = useWatch({
     control: form.control,
     name: [
@@ -85,6 +86,7 @@ export function ChannelQuickOptions(props: ChannelQuickOptionsProps) {
       'upstream_model_update_check_enabled',
       'responses_websocket_enabled',
       'log_request_response_enabled',
+      'local_balance_enabled',
     ],
   })
   const sensitiveDisabled = props.sensitiveLocked || props.disabled
@@ -93,7 +95,8 @@ export function ChannelQuickOptions(props: ChannelQuickOptionsProps) {
       | 'pass_through_body_enabled'
       | 'upstream_model_update_check_enabled'
       | 'responses_websocket_enabled'
-      | 'log_request_response_enabled',
+      | 'log_request_response_enabled'
+      | 'local_balance_enabled',
     value: boolean
   ) => form.setValue(name, value, { shouldDirty: true, shouldValidate: true })
   // The header switch is a shortcut for the "*" rule in Request Header
@@ -159,6 +162,17 @@ export function ChannelQuickOptions(props: ChannelQuickOptionsProps) {
         shouldValidate: true,
       }),
     disabled: props.disabled,
+  })
+  options.push({
+    key: 'local-balance',
+    label: t('Local balance limit'),
+    description: t(
+      'Deduct spend from the balance set here and disable the channel when it reaches zero'
+    ),
+    checked: localBalance === true,
+    onCheckedChange: (value) => setOption('local_balance_enabled', value),
+    // Stored in the channel setting JSON, which needs sensitive write access.
+    disabled: sensitiveDisabled,
   })
   if (props.channelType !== CHANNEL_TYPE_TASK_PLUGIN) {
     options.push({
