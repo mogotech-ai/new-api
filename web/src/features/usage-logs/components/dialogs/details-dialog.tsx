@@ -123,6 +123,34 @@ function formatRatio(ratio: number | undefined): string {
   return ratio.toFixed(4)
 }
 
+// Relay bodies often carry JSON serialized into a string field, such as a
+// tool payload or structured prompt in "content". Parsing those strings back
+// into objects lets the viewer indent them like the rest of the body. Only
+// strings that are a whole JSON object or array are expanded; plain text and
+// scalars such as "42" stay strings.
+function expandNestedJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(expandNestedJson)
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, expandNestedJson(item)])
+    )
+  }
+  if (typeof value !== 'string') return value
+  const trimmed = value.trim()
+  const looksLikeJson =
+    (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+    (trimmed.startsWith('[') && trimmed.endsWith(']'))
+  if (!looksLikeJson) return value
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    return parsed !== null && typeof parsed === 'object'
+      ? expandNestedJson(parsed)
+      : value
+  } catch {
+    return value
+  }
+}
+
 function PayloadBodyViewer(props: {
   body: string
   contentType: string
@@ -134,7 +162,7 @@ function PayloadBodyViewer(props: {
   const formatted = useMemo(() => {
     if (!isJson) return props.body
     try {
-      return JSON.stringify(JSON.parse(props.body), null, 2)
+      return JSON.stringify(expandNestedJson(JSON.parse(props.body)), null, 2)
     } catch {
       return props.body
     }

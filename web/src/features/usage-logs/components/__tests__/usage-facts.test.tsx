@@ -125,7 +125,8 @@ test('shows stored relay request and response bodies only in root details', () =
     created_at: 1,
     request_content_type: 'application/json',
     response_content_type: 'application/json',
-    request_body: '{"model":"test"}',
+    request_body:
+      '{"model":"test","messages":[{"role":"user","content":"{\\"away_team\\":\\"Phoenix Mercury\\",\\"score\\":[88,79]}"},{"role":"user","content":"[not json"}]}',
     response_body: '{"ok":true,"content":"line one\\nline two"}',
     request_body_truncated: true,
     response_body_truncated: false,
@@ -154,6 +155,17 @@ test('shows stored relay request and response bodies only in root details', () =
   expect(screen.getByRole('textbox', { name: 'Response' })).toHaveTextContent(
     '"ok": true'
   )
+  // JSON serialized into a string field is indented like the rest of the
+  // body, while text that only looks like JSON stays a string.
+  const requestLines = Array.from(
+    screen
+      .getByRole('textbox', { name: 'Request (truncated)' })
+      .querySelectorAll('.cm-line'),
+    (line) => line.textContent
+  )
+  expect(requestLines).toContain('        "away_team": "Phoenix Mercury",')
+  expect(requestLines).toContain('          88,')
+  expect(requestLines).toContain('      "content": "[not json"')
   // Escaped line breaks inside a string value render as real lines.
   const responseLines = Array.from(
     screen
@@ -165,11 +177,12 @@ test('shows stored relay request and response bodies only in root details', () =
   expect(responseLines).toContain('line two"')
   // Long single-line bodies (for example a model reply in "content") wrap
   // instead of scrolling sideways.
-  expect(
-    screen
-      .getByRole('textbox', { name: 'Response' })
-      .querySelector('.cm-lineWrapping')
-  ).not.toBeNull()
+  const wrappedContent = screen
+    .getByRole('textbox', { name: 'Response' })
+    .querySelector<HTMLElement>('.cm-lineWrapping')
+  if (!wrappedContent) throw new Error('response viewer does not wrap lines')
+  // A max-content minimum width would stretch past the viewer and stop wrapping.
+  expect(getComputedStyle(wrappedContent).minWidth).not.toBe('max-content')
   fireEvent.click(screen.getAllByRole('button', { name: 'View details' })[0])
   expect(
     screen.getByRole('dialog', { name: 'Request (truncated)' })

@@ -150,6 +150,11 @@ const codeMirrorTheme = EditorView.theme({
     minWidth: 'max-content',
     padding: '1rem 1rem 1rem 0',
   },
+  // max-content keeps unwrapped code on one scrollable line; with wrapLines it
+  // would stretch the content to the longest line and stop wrapping.
+  '.cm-content.cm-lineWrapping': {
+    minWidth: '0',
+  },
   '.cm-editor': {
     background: 'transparent',
     width: '100%',
