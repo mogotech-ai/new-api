@@ -93,6 +93,8 @@ function buildSearchSourceKey(values: {
   username?: unknown
   requestId?: unknown
   upstreamRequestId?: unknown
+  keyword?: unknown
+  keywordScope?: unknown
   type?: unknown
 }) {
   return [
@@ -105,6 +107,8 @@ function buildSearchSourceKey(values: {
     values.username,
     values.requestId,
     values.upstreamRequestId,
+    values.keyword,
+    values.keywordScope,
     Array.isArray(values.type) ? values.type.join(',') : values.type,
   ]
     .map((value) => String(value ?? ''))
@@ -123,7 +127,7 @@ export function CommonLogsFilterBar<TData>(
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const searchParams = route.useSearch()
-  const { isAdminView: isAdmin } = useLogsViewScope()
+  const { isAdminView: isAdmin, isRootView: isRoot } = useLogsViewScope()
   const { sensitiveVisible, setSensitiveVisible } = useUsageLogsContext()
   const fetchingLogs = useIsFetching({ queryKey: ['logs'] })
   const { data: adminGroups } = useQuery({
@@ -157,6 +161,8 @@ export function CommonLogsFilterBar<TData>(
       username: searchParams.username,
       requestId: searchParams.requestId,
       upstreamRequestId: searchParams.upstreamRequestId,
+      keyword: searchParams.keyword,
+      keywordScope: searchParams.keywordScope,
       type: searchParams.type,
     }
     const filters: CommonLogFilters = {
@@ -171,6 +177,8 @@ export function CommonLogsFilterBar<TData>(
       username: searchParams.username || undefined,
       requestId: searchParams.requestId || undefined,
       upstreamRequestId: searchParams.upstreamRequestId || undefined,
+      keyword: searchParams.keyword || undefined,
+      keywordScope: searchParams.keywordScope,
     }
     return {
       sourceKey: buildSearchSourceKey(sourceValues),
@@ -187,6 +195,8 @@ export function CommonLogsFilterBar<TData>(
     searchParams.username,
     searchParams.requestId,
     searchParams.upstreamRequestId,
+    searchParams.keyword,
+    searchParams.keywordScope,
     searchParams.type,
   ])
   const [draft, setDraft] = useState<CommonLogDraft>(() => searchState)
@@ -266,7 +276,8 @@ export function CommonLogsFilterBar<TData>(
     !!filters.username ||
     !!filters.channel ||
     !!filters.requestId ||
-    !!filters.upstreamRequestId
+    !!filters.upstreamRequestId ||
+    (isRoot && !!filters.keyword)
 
   const hasTypeFilter = logType !== LOG_TYPE_ALL_VALUE
   const hasAdditionalFilters =
@@ -278,6 +289,7 @@ export function CommonLogsFilterBar<TData>(
     isAdmin ? filters.channel : undefined,
     filters.requestId,
     filters.upstreamRequestId,
+    isRoot ? filters.keyword : undefined,
   ].filter(Boolean).length
   const sensitiveInputClass = sensitiveVisible
     ? undefined
@@ -292,6 +304,14 @@ export function CommonLogsFilterBar<TData>(
     [t]
   )
   const selectedLogType = logTypeItems.find((type) => type.value === logType)
+  const keywordScopeItems = useMemo(
+    () => [
+      { value: 'all', label: t('Request & Response') },
+      { value: 'request', label: t('Request') },
+      { value: 'response', label: t('Response') },
+    ],
+    [t]
+  )
   const deprecatedTypeDescription = t(
     'Only used to find historical logs. New records are available in Audit Logs.'
   )
@@ -479,6 +499,44 @@ export function CommonLogsFilterBar<TData>(
           onKeyDown={handleKeyDown}
         />
       </LogsFilterField>
+      {isRoot && (
+        <LogsFilterField>
+          <LogsFilterInput
+            placeholder={t('Search request/response content')}
+            aria-label={t('Search request/response content')}
+            value={filters.keyword || ''}
+            onChange={(e) => handleChange('keyword', e.target.value)}
+            onKeyDown={handleKeyDown}
+          />
+        </LogsFilterField>
+      )}
+      {isRoot && (
+        <LogsFilterField>
+          <Select
+            items={keywordScopeItems}
+            value={filters.keywordScope ?? 'all'}
+            onValueChange={(value) =>
+              handleChange(
+                'keywordScope',
+                value === 'request' || value === 'response' ? value : undefined
+              )
+            }
+          >
+            <SelectTrigger aria-label={t('Content search scope')}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent alignItemWithTrigger={false}>
+              <SelectGroup>
+                {keywordScopeItems.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </LogsFilterField>
+      )}
     </>
   )
 

@@ -199,6 +199,15 @@ export function buildApiParams(config: {
     ...(searchParams.upstreamRequestId
       ? { upstream_request_id: String(searchParams.upstreamRequestId) }
       : {}),
+    ...(isAdmin && searchParams.keyword
+      ? {
+          keyword: String(searchParams.keyword),
+          ...(searchParams.keywordScope === 'request' ||
+          searchParams.keywordScope === 'response'
+            ? { keyword_scope: searchParams.keywordScope }
+            : {}),
+        }
+      : {}),
     ...buildTimeRangeParams(searchParams, false),
   }
 

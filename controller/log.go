@@ -1,10 +1,12 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -43,7 +45,41 @@ func GetAllLogs(c *gin.Context) {
 	group := c.Query("group")
 	requestId := c.Query("request_id")
 	upstreamRequestId := c.Query("upstream_request_id")
-	logs, total, err := model.GetAllLogs(logType, startTimestamp, endTimestamp, modelName, username, tokenName, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), channel, group, requestId, upstreamRequestId)
+	var requestIds []string
+	if keyword := c.Query("keyword"); strings.TrimSpace(keyword) != "" {
+		// Payload bodies are root-only, like GetRelayPayload.
+		if c.GetInt("role") < common.RoleRootUser {
+			common.ApiErrorMsg(c, "keyword search is only available to the root user")
+			return
+		}
+		// Body search scans text, so it is held to a bounded time range.
+		if endTimestamp == 0 {
+			endTimestamp = common.GetTimestamp()
+		}
+		if startTimestamp == 0 {
+			startTimestamp = endTimestamp - 24*3600
+		}
+		if endTimestamp-startTimestamp > 7*24*3600 {
+			common.ApiErrorMsg(c, "keyword search is limited to a 7-day time range")
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+		defer cancel()
+		var err error
+		requestIds, err = model.SearchRelayPayloadRequestIds(ctx, keyword, c.Query("keyword_scope"), startTimestamp, endTimestamp, channel)
+		if ctx.Err() != nil {
+			common.ApiErrorMsg(c, "keyword search timed out, narrow the time range")
+			return
+		}
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if requestIds == nil {
+			requestIds = []string{}
+		}
+	}
+	logs, total, err := model.GetAllLogs(logType, startTimestamp, endTimestamp, modelName, username, tokenName, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), channel, group, requestId, upstreamRequestId, requestIds)
 	if err != nil {
 		common.ApiError(c, err)
 		return

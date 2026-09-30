@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -267,6 +268,29 @@ func TestLocalBalanceAndRelayPayloadDatabaseMatrix(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, RelayPayloadBody(`{"model":"test"}`), stored.RequestBody)
 			assert.Equal(t, responseBody, stored.ResponseBody)
+
+			require.NoError(t, SaveRelayPayload(&RelayPayload{RequestId: "req-2", CreatedAt: 2, RequestBody: `{"prompt":"100%_done"}`, ResponseBody: `{"text":"\u4f60\u597d"}`}))
+			require.NoError(t, SaveRelayPayload(&RelayPayload{RequestId: "req-3", CreatedAt: 3, RequestBody: `{"prompt":"100 percent"}`, ResponseBody: `{"text":"你好"}`}))
+			for _, tc := range []struct {
+				keyword, scope string
+				start          int64
+				want           []string
+			}{
+				// Non-ASCII keywords also match their JSON \uXXXX form, newest first.
+				{"你好", "", 0, []string{"req-3", "req-2"}},
+				{"你好", "request", 0, nil},
+				// LIKE wildcards in the keyword are literal.
+				{"100%_", "request", 0, []string{"req-2"}},
+				{"prompt", "all", 3, []string{"req-3"}},
+			} {
+				got, err := SearchRelayPayloadRequestIds(context.Background(), tc.keyword, tc.scope, tc.start, 10, 0)
+				require.NoError(t, err)
+				if tc.want == nil {
+					assert.Empty(t, got, tc.keyword)
+				} else {
+					assert.Equal(t, tc.want, got, tc.keyword)
+				}
+			}
 		})
 	}
 }

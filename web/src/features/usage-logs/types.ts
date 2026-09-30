@@ -1,4 +1,3 @@
-import type { PolicyEvent } from '@/features/system-settings/request-policies/api'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -21,6 +20,7 @@ For commercial licensing, please contact support@quantumnous.com
  * Type definitions for usage logs
  */
 import type { RequestRuleTrace } from '@/features/pricing/lib/billing-expr'
+import type { PolicyEvent } from '@/features/system-settings/request-policies/api'
 
 import type { UsageLog } from './data/schema'
 // ============================================================================
@@ -55,7 +55,12 @@ export interface CommonLogFilters extends CommonFilters {
   username?: string
   requestId?: string
   upstreamRequestId?: string
+  /** Root-only search in stored request/response bodies */
+  keyword?: string
+  keywordScope?: PayloadKeywordScope
 }
+
+export type PayloadKeywordScope = 'request' | 'response'
 
 /**
  * Drawing logs specific filters
@@ -405,6 +410,8 @@ export interface GetLogsParams {
   group?: string
   request_id?: string
   upstream_request_id?: string
+  keyword?: string
+  keyword_scope?: PayloadKeywordScope
 }
 
 export interface GetLogsResponse {
