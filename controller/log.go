@@ -15,6 +15,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// relayPayloadSearchSlot lets only one body search scan the database at a
+// time; later searches wait their turn instead of adding load next to relay
+// traffic.
+var relayPayloadSearchSlot = make(chan struct{}, 1)
+
 func GetRelayPayload(c *gin.Context) {
 	requestId := strings.TrimSpace(c.Param("request_id"))
 	if requestId == "" {
@@ -63,10 +68,15 @@ func GetAllLogs(c *gin.Context) {
 			common.ApiErrorMsg(c, "keyword search is limited to a 7-day time range")
 			return
 		}
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 		defer cancel()
 		var err error
-		requestIds, err = model.SearchRelayPayloadRequestIds(ctx, keyword, c.Query("keyword_scope"), startTimestamp, endTimestamp, channel)
+		select {
+		case relayPayloadSearchSlot <- struct{}{}:
+			defer func() { <-relayPayloadSearchSlot }()
+			requestIds, err = model.SearchRelayPayloadRequestIds(ctx, keyword, c.Query("keyword_scope"), startTimestamp, endTimestamp, channel)
+		case <-ctx.Done():
+		}
 		if ctx.Err() != nil {
 			common.ApiErrorMsg(c, "keyword search timed out, narrow the time range")
 			return

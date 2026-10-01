@@ -55,7 +55,7 @@ func GetRelayPayload(requestId string) (*RelayPayload, error) {
 
 // RelayPayloadSearchLimit caps a keyword search to the newest matches, so the
 // database can stop scanning bodies once it has found enough of them.
-const RelayPayloadSearchLimit = 200
+const RelayPayloadSearchLimit = 5000
 
 var relayPayloadLikeEscaper = strings.NewReplacer("!", "!!", "%", "!%", "_", "!_")
 

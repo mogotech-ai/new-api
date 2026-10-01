@@ -291,6 +291,25 @@ func TestLocalBalanceAndRelayPayloadDatabaseMatrix(t *testing.T) {
 					assert.Equal(t, tc.want, got, tc.keyword)
 				}
 			}
+
+			// A full search result must fit in each dialect's placeholder limit
+			// when it filters the log listing.
+			previousLogDB := LOG_DB
+			LOG_DB = db
+			t.Cleanup(func() { LOG_DB = previousLogDB })
+			require.NoError(t, db.Migrator().DropTable(&Log{}))
+			t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable(&Log{})) })
+			require.NoError(t, db.AutoMigrate(&Log{}))
+			require.NoError(t, db.Create(&Log{RequestId: "req-3", CreatedAt: 3}).Error)
+			requestIds := make([]string, RelayPayloadSearchLimit)
+			for i := range requestIds {
+				requestIds[i] = fmt.Sprintf("req-%d", i+3)
+			}
+			logs, total, err := GetAllLogs(LogTypeUnknown, 0, 0, "", "", "", 0, 10, 0, "", "", "", requestIds)
+			require.NoError(t, err)
+			assert.EqualValues(t, 1, total)
+			require.Len(t, logs, 1)
+			assert.Equal(t, "req-3", logs[0].RequestId)
 		})
 	}
 }
