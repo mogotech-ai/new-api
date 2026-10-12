@@ -30,11 +30,16 @@ func claudeCitationsToChat(raw json.RawMessage, text string, textOffset int) ([]
 		citedText := kitutil.Interface2String(citation["cited_text"])
 		if citedText != "" {
 			converted["cited_text"] = citedText
-			if before, _, ok := strings.Cut(text, citedText); ok {
-				startIndex := textOffset + utf8.RuneCountInString(before)
-				converted["start_index"] = startIndex
-				converted["end_index"] = startIndex + utf8.RuneCountInString(citedText)
-			}
+		}
+		// Claude cites the whole text block it is attached to; cited_text is the
+		// source page excerpt and rarely appears verbatim in the answer.
+		if before, _, ok := strings.Cut(text, citedText); ok && citedText != "" {
+			startIndex := textOffset + utf8.RuneCountInString(before)
+			converted["start_index"] = startIndex
+			converted["end_index"] = startIndex + utf8.RuneCountInString(citedText)
+		} else if text != "" {
+			converted["start_index"] = textOffset
+			converted["end_index"] = textOffset + utf8.RuneCountInString(text)
 		}
 		if encryptedIndex := kitutil.Interface2String(citation["encrypted_index"]); encryptedIndex != "" {
 			converted["encrypted_index"] = encryptedIndex
