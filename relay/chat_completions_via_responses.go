@@ -135,6 +135,22 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 	info.RelayMode = relayconstant.RelayModeResponses
 	info.RequestURLPath = "/v1/responses"
 
+	// Register the converted hosted tools so billed calls resolve to the
+	// declared tool name (web_search vs web_search_preview), as for native
+	// Responses requests.
+	if info.ResponsesUsageInfo == nil {
+		info.ResponsesUsageInfo = &relaycommon.ResponsesUsageInfo{}
+	}
+	if info.ResponsesUsageInfo.BuiltInTools == nil {
+		info.ResponsesUsageInfo.BuiltInTools = make(map[string]*relaycommon.BuildInToolInfo)
+	}
+	for _, tool := range responsesReq.GetToolsMap() {
+		toolType := common.Interface2String(tool["type"])
+		if _, ok := info.ResponsesUsageInfo.BuiltInTools[toolType]; toolType != "" && !ok {
+			info.ResponsesUsageInfo.BuiltInTools[toolType] = &relaycommon.BuildInToolInfo{ToolName: toolType}
+		}
+	}
+
 	convertedRequest, err := adaptor.ConvertOpenAIResponsesRequest(c, info, *responsesReq)
 	if err != nil {
 		return nil, newConvertRequestFailedError(c, info, err)

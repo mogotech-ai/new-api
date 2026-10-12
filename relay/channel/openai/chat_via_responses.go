@@ -152,6 +152,14 @@ func convertResponsesResponseForClient(c *gin.Context, info *relaycommon.RelayIn
 		response.ID = responseID
 	}
 
+	// Same tool-call counting as OaiResponsesHandler.
+	for _, output := range response.Output {
+		switch output.Type {
+		case dto.BuildInCallWebSearchCall, dto.BuildInCallFileSearchCall, dto.BuildInCallFunctionCall:
+			info.CountBillableToolCall(output.Type, output.Name)
+		}
+	}
+
 	usage := relayconvert.UsageFromResponsesUsage(response.Usage)
 	if usage == nil || usage.TotalTokens == 0 {
 		text := service.ExtractOutputTextFromResponses(response)
@@ -278,6 +286,12 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			streamErr = types.NewOpenAIError(fmt.Errorf("responses stream error: %s", streamResp.Type), types.ErrorCodeBadResponse, http.StatusInternalServerError)
 			sr.Stop(streamErr)
 			return
+		}
+		if streamResp.Type == dto.ResponsesOutputTypeItemDone && streamResp.Item != nil {
+			switch streamResp.Item.Type {
+			case dto.BuildInCallWebSearchCall, dto.BuildInCallFileSearchCall, dto.BuildInCallFunctionCall:
+				info.CountBillableToolCall(streamResp.Item.Type, streamResp.Item.Name)
+			}
 		}
 
 		results, err := service.ConvertStreamResponseChunk(c, info, state, &streamResp)

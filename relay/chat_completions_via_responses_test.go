@@ -319,6 +319,10 @@ func TestTextRequestViaResponsesChatWebSearchDropsUnsupportedSampling(t *testing
 	assert.NotContains(t, upstream, "top_p")
 	assert.Equal(t, []any{map[string]any{"type": "web_search", "search_context_size": "low"}}, upstream["tools"])
 
+	require.NotNil(t, info.ResponsesUsageInfo)
+	assert.Equal(t, 1, info.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolWebSearch].CallCount)
+	assert.NotContains(t, info.ResponsesUsageInfo.BuiltInTools, dto.BuildInToolWebSearchPreview)
+
 	var response dto.OpenAITextResponse
 	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
 	require.Len(t, response.Choices, 1)
