@@ -277,3 +277,51 @@ func TestApplySystemPromptIfNeededSkipsToolLoadingMessages(t *testing.T) {
 		})
 	}
 }
+
+// forecast-style Chat web search on a Responses-only OpenAI model: the hosted
+// tool must reach /v1/responses, unsupported sampling parameters must be
+// dropped like the Chat adaptor does, and citations must come back with spans.
+func TestTextRequestViaResponsesChatWebSearchDropsUnsupportedSampling(t *testing.T) {
+	var upstreamBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","status":"completed","model":"gpt-6.1-sol","output":[
+			{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"nba"}},
+			{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Nuggets beat Bulls 133-128.","annotations":[{"type":"url_citation","url":"https://nba.com/x","title":"NBA","start_index":0,"end_index":27}]}]}
+		],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`))
+	}))
+	defer server.Close()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	common.SetContextKey(c, constant.ContextKeyOriginalModel, "gpt-6.1-sol")
+	common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+	common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, server.URL)
+	common.SetContextKey(c, constant.ContextKeyChannelKey, "test-key")
+
+	var request dto.GeneralOpenAIRequest
+	require.NoError(t, common.Unmarshal([]byte(`{"model":"gpt-6.1-sol","temperature":0.2,"top_p":0.9,
+		"messages":[{"role":"user","content":"q"}],
+		"web_search_options":{"search_context_size":"low"}}`), &request))
+	info := relaycommon.GenRelayInfoOpenAI(c, &request)
+	info.InitChannelMeta(c)
+	adaptor := GetAdaptor(info.ApiType)
+	adaptor.Init(info)
+
+	_, apiErr := textRequestViaResponses(c, info, adaptor, &request)
+	require.Nil(t, apiErr)
+
+	var upstream map[string]any
+	require.NoError(t, common.Unmarshal(upstreamBody, &upstream))
+	assert.NotContains(t, upstream, "temperature")
+	assert.NotContains(t, upstream, "top_p")
+	assert.Equal(t, []any{map[string]any{"type": "web_search", "search_context_size": "low"}}, upstream["tools"])
+
+	var response dto.OpenAITextResponse
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.Len(t, response.Choices, 1)
+	assert.JSONEq(t, `[{"type":"url_citation","url_citation":{"url":"https://nba.com/x","title":"NBA","start_index":0,"end_index":27}}]`,
+		string(response.Choices[0].Message.Annotations))
+}
