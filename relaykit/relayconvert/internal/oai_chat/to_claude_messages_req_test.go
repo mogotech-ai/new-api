@@ -2,12 +2,47 @@ package oaichat
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestOpenAIChatRequestToClaudeMessagesPreservesTextCacheControl(t *testing.T) {
+	maxTokens := uint(1024)
+	cacheControl := json.RawMessage(`{"type":"ephemeral"}`)
+	got, err := OpenAIChatRequestToClaudeMessages(context.Background(), nil, dto.GeneralOpenAIRequest{
+		Model:     "claude-test",
+		MaxTokens: &maxTokens,
+		Messages: []dto.Message{
+			{
+				Role: "system",
+				Content: []dto.MediaContent{
+					{Type: "text", Text: "Stable instructions", CacheControl: cacheControl},
+				},
+			},
+			{
+				Role: "user",
+				Content: []dto.MediaContent{
+					{Type: "text", Text: "Shared facts", CacheControl: cacheControl},
+				},
+			},
+		},
+	})
+
+	require.NoError(t, err)
+	system, ok := got.System.([]dto.ClaudeMediaMessage)
+	require.True(t, ok)
+	require.Len(t, system, 1)
+	assert.JSONEq(t, string(cacheControl), string(system[0].CacheControl))
+	require.Len(t, got.Messages, 1)
+	content, ok := got.Messages[0].Content.([]dto.ClaudeMediaMessage)
+	require.True(t, ok)
+	require.Len(t, content, 1)
+	assert.JSONEq(t, string(cacheControl), string(content[0].CacheControl))
+}
 
 func TestOpenAIChatRequestToClaudeMessagesNormalizesToolInputSchema(t *testing.T) {
 	tests := []struct {
