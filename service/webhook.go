@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -30,6 +34,48 @@ func generateSignature(secret string, payload []byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// Feishu/Lark custom bots only accept their own message format and report
+// failures in a 200 body.
+// https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot
+func isFeishuBotWebhook(webhookURL string) bool {
+	return strings.HasPrefix(webhookURL, "https://open.feishu.cn/open-apis/bot/v2/hook/") ||
+		strings.HasPrefix(webhookURL, "https://open.larksuite.com/open-apis/bot/v2/hook/")
+}
+
+// feishuBotWebhookBody builds a Feishu custom bot text message; a non-empty
+// secret signs it for bots with signature verification enabled.
+func feishuBotWebhookBody(text string, secret string, timestamp int64) ([]byte, error) {
+	body := map[string]any{
+		"msg_type": "text",
+		"content":  map[string]string{"text": text},
+	}
+	if secret != "" {
+		ts := strconv.FormatInt(timestamp, 10)
+		h := hmac.New(sha256.New, []byte(ts+"\n"+secret))
+		body["timestamp"] = ts
+		body["sign"] = base64.StdEncoding.EncodeToString(h.Sum(nil))
+	}
+	return common.Marshal(body)
+}
+
+func checkFeishuBotWebhookResponse(resp *http.Response) error {
+	var result struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return fmt.Errorf("failed to read feishu webhook response: %v", err)
+	}
+	if err := common.Unmarshal(body, &result); err != nil {
+		return fmt.Errorf("failed to parse feishu webhook response: %v", err)
+	}
+	if result.Code != 0 {
+		return fmt.Errorf("feishu webhook failed: code=%d, msg=%s", result.Code, result.Msg)
+	}
+	return nil
+}
+
 // SendWebhookNotify 发送 webhook 通知
 func SendWebhookNotify(webhookURL string, secret string, data dto.Notify) error {
 	// 处理占位符
@@ -48,7 +94,14 @@ func SendWebhookNotify(webhookURL string, secret string, data dto.Notify) error 
 	}
 
 	// 序列化负载
-	payloadBytes, err := common.Marshal(payload)
+	feishu := isFeishuBotWebhook(webhookURL)
+	var payloadBytes []byte
+	var err error
+	if feishu {
+		payloadBytes, err = feishuBotWebhookBody(data.Title+"\n"+content, secret, payload.Timestamp)
+	} else {
+		payloadBytes, err = common.Marshal(payload)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to marshal webhook payload: %v", err)
 	}
@@ -70,7 +123,7 @@ func SendWebhookNotify(webhookURL string, secret string, data dto.Notify) error 
 		}
 
 		// 如果有secret，添加签名到headers
-		if secret != "" {
+		if secret != "" && !feishu {
 			signature := generateSignature(secret, payloadBytes)
 			workerReq.Headers["X-Webhook-Signature"] = signature
 			workerReq.Headers["Authorization"] = "Bearer " + secret
@@ -101,7 +154,7 @@ func SendWebhookNotify(webhookURL string, secret string, data dto.Notify) error 
 		req.Header.Set("Content-Type", "application/json")
 
 		// 如果有 secret，生成签名
-		if secret != "" {
+		if secret != "" && !feishu {
 			signature := generateSignature(secret, payloadBytes)
 			req.Header.Set("X-Webhook-Signature", signature)
 		}
@@ -120,5 +173,8 @@ func SendWebhookNotify(webhookURL string, secret string, data dto.Notify) error 
 		}
 	}
 
+	if feishu {
+		return checkFeishuBotWebhookResponse(resp)
+	}
 	return nil
 }
