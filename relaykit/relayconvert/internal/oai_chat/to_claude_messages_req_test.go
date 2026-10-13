@@ -11,26 +11,17 @@ import (
 )
 
 func TestOpenAIChatRequestToClaudeMessagesPreservesTextCacheControl(t *testing.T) {
-	maxTokens := uint(1024)
 	cacheControl := json.RawMessage(`{"type":"ephemeral"}`)
-	got, err := OpenAIChatRequestToClaudeMessages(context.Background(), nil, dto.GeneralOpenAIRequest{
-		Model:     "claude-test",
-		MaxTokens: &maxTokens,
-		Messages: []dto.Message{
-			{
-				Role: "system",
-				Content: []dto.MediaContent{
-					{Type: "text", Text: "Stable instructions", CacheControl: cacheControl},
-				},
-			},
-			{
-				Role: "user",
-				Content: []dto.MediaContent{
-					{Type: "text", Text: "Shared facts", CacheControl: cacheControl},
-				},
-			},
-		},
-	})
+	var request dto.GeneralOpenAIRequest
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"model":"claude-test",
+		"max_tokens":1024,
+		"messages":[
+			{"role":"system","content":[{"type":"text","text":"Stable instructions","cache_control":{"type":"ephemeral"}}]},
+			{"role":"user","content":[{"type":"text","text":"Shared facts","cache_control":{"type":"ephemeral"}}]}
+		]
+	}`), &request))
+	got, err := OpenAIChatRequestToClaudeMessages(context.Background(), nil, request)
 
 	require.NoError(t, err)
 	system, ok := got.System.([]dto.ClaudeMediaMessage)
