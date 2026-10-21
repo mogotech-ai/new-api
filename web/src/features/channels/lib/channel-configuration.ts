@@ -153,7 +153,10 @@ export function getChannelConfigurationState(
     requestProcessing: Boolean(
       (values.type === 1 && values.force_format) ||
       values.thinking_to_content ||
-      values.log_request_response_enabled ||
+      // New channels default logging on, so only turning it off counts there.
+      (isEditing
+        ? values.log_request_response_enabled
+        : values.log_request_response_enabled === false) ||
       (values.type !== CHANNEL_TYPE_ADVANCED_CUSTOM &&
         values.pass_through_body_enabled) ||
       (supportsResponsesWebSocket(values.type) &&

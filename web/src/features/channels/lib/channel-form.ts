@@ -460,7 +460,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   force_format: false,
   thinking_to_content: false,
   local_balance_enabled: false,
-  log_request_response_enabled: false,
+  log_request_response_enabled: true,
   proxy: '',
   http_protocol: HTTP_PROTOCOL_AUTO,
   http2_connection_shards: 1,

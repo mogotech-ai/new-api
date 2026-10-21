@@ -746,12 +746,39 @@ func getVertexArrayKeys(keys string) ([]string, error) {
 	return cleanKeys, nil
 }
 
+// applyNewChannelSettingDefaults preserves explicit settings and unknown fields on creation.
+func applyNewChannelSettingDefaults(channel *model.Channel) {
+	settings := make(map[string]json.RawMessage)
+	if channel.Setting != nil && strings.TrimSpace(*channel.Setting) != "" {
+		if err := common.Unmarshal([]byte(*channel.Setting), &settings); err != nil {
+			return
+		}
+	}
+	if _, exists := settings["log_request_response_enabled"]; exists {
+		return
+	}
+	if settings == nil {
+		settings = make(map[string]json.RawMessage)
+	}
+	settings["log_request_response_enabled"] = json.RawMessage("true")
+	encoded, err := common.Marshal(settings)
+	if err != nil {
+		return
+	}
+	setting := string(encoded)
+	channel.Setting = &setting
+}
+
 func AddChannel(c *gin.Context) {
 	addChannelRequest := AddChannelRequest{}
 	err := c.ShouldBindJSON(&addChannelRequest)
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+
+	if addChannelRequest.Channel != nil {
+		applyNewChannelSettingDefaults(addChannelRequest.Channel)
 	}
 
 	// Binding a plugin needs the same permission on a New API channel as the
