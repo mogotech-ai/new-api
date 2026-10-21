@@ -57,6 +57,9 @@ func ApplyReasoningModelSuffix(c *gin.Context, info *relaycommon.RelayInfo, outb
 	if upstream != origin {
 		selected, diagnostics = overlayMappedModelModifiers(selected, upstreamParsed, diagnostics)
 	}
+	if info.RelayFormat == types.RelayFormatOpenAIRealtime && (selected.hasThinking || selected.hasTemperature || selected.hasTopP) {
+		return reasoning.AsClientError(fmt.Errorf("model modifier controls are not supported for Realtime requests"))
+	}
 
 	if selected.hasThinking {
 		explicit, explicitDiagnostics, err := explicitIntentFromRequest(info.Request)

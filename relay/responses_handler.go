@@ -7,7 +7,6 @@ import (
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
-	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -80,19 +79,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 
 	usageDto := usage.(*dto.Usage)
 	if info.RelayMode == relayconstant.RelayModeResponsesCompact {
-		originModelName := info.OriginModelName
-		originPriceData := info.PriceData
-
-		_, err := helper.ModelPriceHelper(c, info, info.GetEstimatePromptTokens(), &types.TokenCountMeta{})
-		if err != nil {
-			info.OriginModelName = originModelName
-			info.PriceData = originPriceData
-			return types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry(), types.ErrOptionWithStatusCode(http.StatusBadRequest))
-		}
 		service.PostTextConsumeQuota(c, info, usageDto, nil)
-
-		info.OriginModelName = originModelName
-		info.PriceData = originPriceData
 		return nil
 	}
 
@@ -101,9 +88,13 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 }
 
 // ConsumeResponsesQuota applies the same settlement dispatch to HTTP and
-// WebSocket Responses usage. Compact requests keep their separate repricing.
+// WebSocket Responses usage. Compact requests use text settlement directly.
 func ConsumeResponsesQuota(c *gin.Context, info *relaycommon.RelayInfo, usage *dto.Usage) {
-	if strings.HasPrefix(info.OriginModelName, "gpt-4o-audio") {
+	billingModel := info.OriginModelName
+	if info.PricingSource == "upstream" {
+		billingModel = info.GetBillingModelName()
+	}
+	if strings.HasPrefix(billingModel, "gpt-4o-audio") {
 		service.PostAudioConsumeQuota(c, info, usage, "")
 		return
 	}

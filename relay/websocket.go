@@ -2,11 +2,14 @@ package relay
 
 import (
 	"fmt"
+	"net/url"
 	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/pkg/wsmanager"
+	relaychannel "github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
@@ -15,14 +18,37 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func WssHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.NewAPIError) {
+func prepareRealtimeRequest(c *gin.Context, info *relaycommon.RelayInfo) (relaychannel.Adaptor, *types.NewAPIError) {
 	info.InitChannelMeta(c)
+	if err := helper.ModelMappedHelper(c, info, nil); err != nil {
+		return nil, types.NewError(err, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
+	}
+	if err := helper.ApplyReasoningModelSuffix(c, info); err != nil {
+		return nil, newConvertRequestFailedError(c, info, err)
+	}
+	requestURL, err := url.Parse(info.RequestURLPath)
+	if err != nil {
+		return nil, types.NewError(err, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+	}
+	query := requestURL.Query()
+	query.Set("model", info.UpstreamModelName)
+	requestURL.RawQuery = query.Encode()
+	info.RequestURLPath = requestURL.String()
 
 	adaptor := GetAdaptor(info.ApiType)
 	if adaptor == nil {
-		return types.NewError(fmt.Errorf("invalid api type: %d", info.ApiType), types.ErrorCodeInvalidApiType, types.ErrOptionWithSkipRetry())
+		return nil, types.NewError(fmt.Errorf("invalid api type: %d", info.ApiType), types.ErrorCodeInvalidApiType, types.ErrOptionWithSkipRetry())
 	}
 	adaptor.Init(info)
+	return adaptor, nil
+}
+
+func WssHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.NewAPIError) {
+	adaptor, apiErr := prepareRealtimeRequest(c, info)
+	if apiErr != nil {
+		return apiErr
+	}
+
 	//var requestBody io.Reader
 	//firstWssRequest, _ := c.Get("first_wss_request")
 	//requestBody = bytes.NewBuffer(firstWssRequest.([]byte))

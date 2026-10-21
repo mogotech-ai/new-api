@@ -364,6 +364,27 @@ func TestPrepareTieredBillingForSelectedGroupUpdatesReservation(t *testing.T) {
 	assert.Equal(t, 100_000, relayInfo.FinalPreConsumedQuota)
 	assert.Equal(t, 0.20, relayInfo.TieredBillingSnapshot.GroupRatio)
 	assert.Equal(t, 100_000, relayInfo.TieredBillingSnapshot.EstimatedQuotaAfterGroup)
+	require.Nil(t, PrepareTieredBillingForSelectedGroup(nil, relayInfo))
+	assert.Equal(t, []int{100_000}, billing.reserveTargets)
+	relayInfo.PriceData.GroupRatioInfo.GroupRatio = 0.40
+	require.Nil(t, PrepareTieredBillingForSelectedGroup(nil, relayInfo))
+	assert.Equal(t, []int{100_000, 200_000}, billing.reserveTargets)
+	assert.Equal(t, 200_000, relayInfo.FinalPreConsumedQuota)
+}
+
+func TestPrepareTieredBillingForSelectedGroupRejectsClampedRetryReservation(t *testing.T) {
+	quota, clamp := common.QuotaFromFloatChecked(math.Inf(1))
+	require.NotNil(t, clamp)
+	billing := &recordingBillingSettler{preConsumedQuota: 100}
+	info := &relaycommon.RelayInfo{
+		Billing: billing, QuotaClamp: clamp,
+		PriceData: types.PriceData{QuotaToPreConsume: quota, GroupRatioInfo: types.GroupRatioInfo{GroupRatio: 1}},
+	}
+	apiErr := PrepareTieredBillingForSelectedGroup(nil, info)
+	require.NotNil(t, apiErr)
+	assert.Equal(t, "model_price_error", string(apiErr.GetErrorCode()))
+	assert.Empty(t, billing.reserveTargets, "a retry must reject saturated pricing before raising the reservation")
+	assert.Equal(t, 100, billing.preConsumedQuota)
 }
 
 func TestPrepareTieredBillingForSelectedGroupStartsBillingAfterFreeGroup(t *testing.T) {

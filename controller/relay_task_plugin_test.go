@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,8 +18,10 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relay"
+	jspluginadaptor "github.com/QuantumNous/new-api/relay/channel/task/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -143,6 +146,7 @@ func TestExecuteTaskSubmissionRefundsWhenInsertFails(t *testing.T) {
 		return &relay.TaskSubmitResult{
 			UpstreamTaskID: "upstream_private",
 			Platform:       constant.TaskPlatform("plugin"),
+			Quota:          1,
 		}, nil
 	})
 
@@ -165,6 +169,7 @@ func TestExecuteTaskSubmissionSettlementFailureStaysDurableAndWritesNothing(t *t
 		return &relay.TaskSubmitResult{
 			UpstreamTaskID: "upstream_private",
 			Platform:       constant.TaskPlatform("plugin"),
+			Quota:          1,
 		}, nil
 	})
 
@@ -412,6 +417,7 @@ func TestExecuteTaskSubmissionDisconnectAfterDurableInsertDoesNotRefund(t *testi
 		return &relay.TaskSubmitResult{
 			UpstreamTaskID: "upstream_private",
 			Platform:       constant.TaskPlatform("plugin"),
+			Quota:          1,
 		}, nil
 	})
 
@@ -509,6 +515,134 @@ func openTaskDialectDatabase(t *testing.T, models ...any) (*gorm.DB, common.Data
 	}
 	t.Logf("database: %s %s", dialect, version)
 	return db, dialect
+}
+
+type taskTokenBillingTransport struct{}
+
+func (taskTokenBillingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{}`)), Request: r}, nil
+}
+
+func TestMappedTaskTokenBillingFromSubmitToCompletion(t *testing.T) {
+	db, dialect := openTaskDialectDatabase(t, &model.User{}, &model.Channel{}, &model.Task{}, &model.Log{})
+	oldDB, oldLogDB := model.DB, model.LOG_DB
+	oldMain, oldLog := common.MainDatabaseType(), common.LogDatabaseType()
+	oldRedis, oldMemory, oldBatch, oldConsume, oldExport := common.RedisEnabled, common.MemoryCacheEnabled, common.BatchUpdateEnabled, common.LogConsumeEnabled, common.DataExportEnabled
+	oldRatios, oldPrices, oldGroups := ratio_setting.ModelRatio2JSONString(), ratio_setting.ModelPrice2JSONString(), ratio_setting.GroupRatio2JSONString()
+	oldSpecialGroups := ratio_setting.GroupGroupRatio2JSONString()
+	oldAdaptor := service.GetTaskAdaptorFunc
+	model.DB, model.LOG_DB = db, db
+	common.SetDatabaseTypes(dialect, dialect)
+	common.RedisEnabled, common.MemoryCacheEnabled, common.BatchUpdateEnabled, common.LogConsumeEnabled, common.DataExportEnabled = false, false, false, true, false
+	if service.GetHttpClient() == nil {
+		service.InitHttpClient()
+	}
+	client := service.GetHttpClient()
+	oldTransport := client.Transport
+	client.Transport = taskTokenBillingTransport{}
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = oldDB, oldLogDB
+		common.SetDatabaseTypes(oldMain, oldLog)
+		common.RedisEnabled, common.MemoryCacheEnabled, common.BatchUpdateEnabled, common.LogConsumeEnabled, common.DataExportEnabled = oldRedis, oldMemory, oldBatch, oldConsume, oldExport
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(oldRatios))
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(oldPrices))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(oldGroups))
+		require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(oldSpecialGroups))
+		service.GetTaskAdaptorFunc = oldAdaptor
+		client.Transport = oldTransport
+	})
+	const source = `
+export const meta={apiVersion:1,key:"mapped-tokens",name:"Mapped tokens",version:"1.0.0",author:{name:"Test"},models:["token-upstream"],fetchMode:"per_task"};
+export function buildSubmitRequest(ctx){return {url:ctx.baseUrl+"/submit",body:{model:ctx.upstreamModel}};}
+export function parseSubmitResponse(){return {taskId:"vendor-job",taskData:{}};}
+export function buildQueryRequest(ctx){return {url:ctx.baseUrl+"/query"};}
+export function parseTaskResult(){return {status:"SUCCESS",totalTokens:1000};}
+`
+	plugin, err := pluginruntime.CompilePlugin(source, pluginruntime.Options{})
+	require.NoError(t, err)
+	service.GetTaskAdaptorFunc = func(constant.TaskPlatform) service.TaskPollingAdaptor { return jspluginadaptor.New(plugin) }
+	for index, tc := range []struct {
+		name, ratios           string
+		wantBilling            string
+		wantQuota              int
+		historical             bool
+		unmapped, specialGroup bool
+	}{
+		{"mapped ratio", `{"token-alias":1,"token-upstream":4}`, "token-upstream", 4000, false, false, false},
+		{"unpriced alias", `{"token-upstream":4}`, "token-upstream", 4000, false, false, false},
+		{"unpriced upstream fallback", `{"token-alias":1}`, "", 2000, false, false, false},
+		{"unmapped live ratio", `{"token-alias":1}`, "", 2000, false, true, false},
+		{"unmapped special group", `{"token-alias":1}`, "", 1000, false, true, true},
+		{"historical context", `{"token-alias":1,"token-upstream":4}`, "token-upstream", 2000, true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(tc.ratios))
+			require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{}`))
+			require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
+			require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{"special":{"default":0.5}}`))
+			const initial = 2_000_000
+			user := model.User{Username: fmt.Sprintf("token_user_%d", index), AffCode: fmt.Sprintf("token_aff_%d", index), Quota: initial}
+			require.NoError(t, db.Create(&user).Error)
+			ch := model.Channel{Name: "token provider", Type: constant.ChannelTypeTaskPlugin, BaseURL: common.GetPointer("https://billing.invalid"), Key: "test"}
+			require.NoError(t, db.Create(&ch).Error)
+			c := taskSubmissionTestContext()
+			c.Set("task_request", map[string]any{"model": "token-alias"})
+			if !tc.unmapped {
+				c.Set("model_mapping", `{"token-alias":"token-upstream"}`)
+			}
+			c.Set(pluginruntime.ContextKeyPinnedPlugin, pluginruntime.PinnedPlugin{Plugin: plugin})
+			common.SetContextKey(c, constant.ContextKeyOriginalModel, "token-alias")
+			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, "https://billing.invalid")
+			common.SetContextKey(c, constant.ContextKeyChannelId, ch.Id)
+			common.SetContextKey(c, constant.ContextKeyChannelType, ch.Type)
+			info := taskSubmissionRelayInfo(nil)
+			info.UserId, info.OriginModelName, info.UserGroup = user.Id, "token-alias", "default"
+			if tc.specialGroup {
+				info.UserGroup = "special"
+			}
+			info.IsPlayground = true
+			info.UserSetting.BillingPreference = "wallet_only"
+			info.PublicTaskID, info.LockedChannel = model.GenerateTaskID(), &ch
+			outcome, taskErr := executeTaskSubmission(c, info)
+			require.Nil(t, taskErr)
+			require.NotNil(t, outcome)
+			var stored model.Task
+			require.NoError(t, db.Where("task_id = ?", info.PublicTaskID).First(&stored).Error)
+			require.NotNil(t, stored.PrivateData.BillingContext)
+			assert.Equal(t, tc.wantBilling, stored.PrivateData.BillingContext.BillingModelName)
+			assert.Equal(t, "token-alias", stored.Properties.OriginModelName)
+			wantUpstream := "token-upstream"
+			if tc.unmapped {
+				wantUpstream = "token-alias"
+			}
+			assert.Equal(t, wantUpstream, stored.Properties.UpstreamModelName)
+			assert.Equal(t, info.PriceData.Quota, stored.Quota)
+			if tc.historical {
+				stored.PrivateData.BillingContext.BillingModelName = ""
+				require.NoError(t, db.Model(&stored).Update("private_data", stored.PrivateData).Error)
+			}
+			liveRatios := `{"token-alias":2,"token-upstream":9}`
+			if tc.specialGroup {
+				liveRatios = `{"token-alias":1}`
+				assert.Equal(t, 0.5, stored.PrivateData.BillingContext.GroupRatio)
+			}
+			require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(liveRatios))
+			require.NoError(t, service.UpdateVideoTasks(context.Background(), constant.TaskPlatform(plugin.Meta.Key), map[int][]string{ch.Id: {stored.GetUpstreamTaskID()}}, map[string]*model.Task{stored.GetUpstreamTaskID(): &stored}))
+			require.NoError(t, db.First(&stored, stored.ID).Error)
+			assert.Equal(t, model.TaskStatus(model.TaskStatusSuccess), stored.Status)
+			assert.Equal(t, tc.wantQuota, stored.Quota)
+			var updated model.User
+			require.NoError(t, db.First(&updated, user.Id).Error)
+			assert.Equal(t, initial-tc.wantQuota, updated.Quota)
+			assert.Equal(t, tc.wantQuota, updated.UsedQuota)
+			var logs []model.Log
+			require.NoError(t, db.Where("user_id = ?", user.Id).Find(&logs).Error)
+			require.NotEmpty(t, logs)
+			for _, log := range logs {
+				assert.Equal(t, "token-alias", log.ModelName)
+			}
+		})
+	}
 }
 
 func TestImmediateTaskSettlementDatabase(t *testing.T) {

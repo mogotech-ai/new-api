@@ -104,7 +104,10 @@ type RelayInfo struct {
 	// BillingModelName is the pricing identity for this request. It is kept
 	// separate from OriginModelName and UpstreamModelName so virtual pricing
 	// aliases never participate in channel selection or upstream routing.
-	BillingModelName string
+	BillingModelName          string
+	RequestedBillingModelName string
+	PricingSource             string
+	PricingFallback           bool
 
 	RequestURLPath     string
 	RequestHeaders     map[string]string
@@ -165,7 +168,8 @@ type RelayInfo struct {
 	UseRuntimeHeadersOverride             bool
 	ParamOverrideAudit                    []string
 
-	PriceData hosttypes.PriceData
+	PriceData             hosttypes.PriceData
+	BillingTokenCountMeta *types.TokenCountMeta
 
 	// QuotaClamp is set (non-nil) when a quota conversion saturated at the
 	// supported single-request bound (or NaN fallback) while computing this request's charge.
@@ -840,6 +844,17 @@ func (info *RelayInfo) GetBillingModelName() string {
 	}
 	if info.BillingModelName != "" {
 		return info.BillingModelName
+	}
+	return info.OriginModelName
+}
+
+// GetLogModelName preserves the requested pricing alias for logs and statistics.
+func (info *RelayInfo) GetLogModelName() string {
+	if info == nil {
+		return ""
+	}
+	if info.RequestedBillingModelName != "" {
+		return info.RequestedBillingModelName
 	}
 	return info.OriginModelName
 }

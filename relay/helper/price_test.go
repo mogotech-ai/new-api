@@ -745,3 +745,54 @@ func (s *priceTestReservation) Refund(*gin.Context)      {}
 func (s *priceTestReservation) NeedsRefund() bool        { return false }
 func (s *priceTestReservation) GetPreConsumedQuota() int { return s.held }
 func (s *priceTestReservation) Reserve(quota int) error  { s.held = max(s.held, quota); return nil }
+
+func TestMappedBillingModelCandidateResolution(t *testing.T) {
+	previous := config.GlobalConfig.ExportAllConfigs()
+	previousSelfUse := operation_setting.SelfUseModeEnabled
+	previousRatios, previousPrices := ratio_setting.ModelRatio2JSONString(), ratio_setting.ModelPrice2JSONString()
+	t.Cleanup(func() {
+		operation_setting.SelfUseModeEnabled = previousSelfUse
+		require.NoError(t, config.GlobalConfig.LoadFromDB(previous))
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(previousRatios))
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(previousPrices))
+	})
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"mapped-client":1,"qwen3-max":2,"qwen3-max@effort:high@thinking:on":4}`))
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"mapped-fixed":0.01}`))
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{"group_ratio_setting.group_ratio": `{"default":1}`}))
+	operation_setting.SelfUseModeEnabled = true
+	for _, tc := range []struct {
+		name, origin, mapping, upstream, billing string
+		ratio                                    float64
+		perCall, fixed, fallback                 bool
+	}{
+		{name: "canonical upstream", origin: "mapped-client", mapping: `{"mapped-client":"qwen3-max@thinking:on@effort:high@temperature:0.2"}`, upstream: "qwen3-max@thinking:on@effort:high@temperature:0.2", billing: "qwen3-max@effort:high@thinking:on", ratio: 4},
+		{name: "base mapping and chain", origin: "mapped-client@temperature:0.2", mapping: `{"mapped-client":"intermediate","intermediate":"qwen3-max","qwen3-max":"qwen3-max"}`, upstream: "qwen3-max", billing: "qwen3-max", ratio: 2},
+		{name: "self mapping", origin: "mapped-client", mapping: `{"mapped-client":"mapped-client"}`, upstream: "mapped-client", billing: "mapped-client", ratio: 1},
+		{name: "self use does not price unknown upstream", origin: "mapped-client", mapping: `{"mapped-client":"unpriced-upstream"}`, upstream: "unpriced-upstream", billing: "mapped-client", ratio: 1, fallback: true},
+		{name: "per call ratios", origin: "mapped-client", mapping: `{"mapped-client":"qwen3-max"}`, upstream: "qwen3-max", billing: "qwen3-max", ratio: 2, perCall: true},
+		{name: "per call fixed price", origin: "mapped-client", mapping: `{"mapped-client":"mapped-fixed"}`, upstream: "mapped-fixed", billing: "mapped-fixed", perCall: true, fixed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Set("model_mapping", tc.mapping)
+			info := &relaycommon.RelayInfo{OriginModelName: tc.origin, UserGroup: "default", UsingGroup: "default"}
+			request := &dto.GeneralOpenAIRequest{}
+			require.NoError(t, ModelMappedHelper(ctx, info, request))
+			assert.Equal(t, tc.upstream, request.Model)
+			price, err := ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{})
+			if tc.perCall {
+				price, err = ModelPriceHelperPerCall(ctx, info)
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.billing, info.GetBillingModelName())
+			assert.Equal(t, tc.fallback, info.PricingFallback)
+			assert.Equal(t, tc.ratio, price.ModelRatio)
+			if tc.fixed {
+				assert.True(t, price.UsePrice)
+				assert.Equal(t, 5000, price.Quota)
+			} else if tc.perCall {
+				assert.Equal(t, 500_000, price.Quota)
+			}
+		})
+	}
+}

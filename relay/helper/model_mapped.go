@@ -15,6 +15,8 @@ func ModelMappedHelper(c *gin.Context, info *relaycommon.RelayInfo, request dto.
 	if info.ChannelMeta == nil {
 		info.ChannelMeta = &relaycommon.ChannelMeta{}
 	}
+	info.UpstreamModelName = info.OriginModelName
+	info.IsModelMapped = false
 
 	// map model name
 	modelMapping := c.GetString("model_mapping")
@@ -41,8 +43,7 @@ func ModelMappedHelper(c *gin.Context, info *relaycommon.RelayInfo, request dto.
 				if visitedModels[mappedModel] {
 					if mappedModel == currentModel {
 						if currentModel == info.OriginModelName {
-							info.IsModelMapped = false
-							return nil
+							break
 						}
 
 						info.IsModelMapped = true

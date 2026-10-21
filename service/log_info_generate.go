@@ -73,7 +73,18 @@ func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 	}
 	other.SetAdmin("use_channel", ctx.GetStringSlice("use_channel"))
 	if relayInfo != nil {
-		if billingModel := relayInfo.GetBillingModelName(); billingModel != "" && billingModel != relayInfo.OriginModelName {
+		if pricingModel := relayInfo.GetBillingModelName(); pricingModel != "" {
+			other.SetAdmin("pricing_model", pricingModel)
+			source := relayInfo.PricingSource
+			if source == "" {
+				source = "requested"
+			}
+			other.SetAdmin("pricing_source", source)
+			if relayInfo.PricingFallback {
+				other.SetAdmin("pricing_fallback", true)
+			}
+		}
+		if billingModel := relayInfo.GetLogModelName(); billingModel != "" && billingModel != relayInfo.OriginModelName {
 			other.SetAdmin("billing_model", billingModel)
 		}
 		if diagnostics := relayInfo.ConversionDiagnostics(); len(diagnostics) > 0 {

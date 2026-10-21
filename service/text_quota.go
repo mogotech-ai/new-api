@@ -145,6 +145,7 @@ func mergeToolSurchargeItems(items []ToolSurchargeItem) []ToolSurchargeItem {
 }
 
 func calculateTextToolCallSurcharge(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, summary *textQuotaSummary) decimal.Decimal {
+	billingModelName := relayInfo.GetBillingModelName()
 	dGroupRatio := decimal.NewFromFloat(summary.GroupRatio)
 	dQuotaPerUnit := decimal.NewFromFloat(common.QuotaPerUnit)
 
@@ -155,23 +156,23 @@ func calculateTextToolCallSurcharge(ctx *gin.Context, relayInfo *relaycommon.Rel
 			if tool == nil {
 				continue
 			}
-			items = collectToolSurchargeItem(items, name, tool.CallCount, summary.ModelName)
+			items = collectToolSurchargeItem(items, name, tool.CallCount, billingModelName)
 		}
 	}
 	if relayInfo.RelayMode != relayconstant.RelayModeResponses &&
-		strings.HasSuffix(summary.ModelName, "search-preview") {
-		items = collectToolSurchargeItem(items, dto.BuildInToolWebSearchPreview, 1, summary.ModelName)
+		strings.HasSuffix(billingModelName, "search-preview") {
+		items = collectToolSurchargeItem(items, dto.BuildInToolWebSearchPreview, 1, billingModelName)
 	}
 
 	items = collectToolSurchargeItem(
 		items,
 		dto.BuildInToolWebSearch,
 		ctx.GetInt("claude_web_search_requests"),
-		summary.ModelName,
+		billingModelName,
 	)
 
 	if ctx.GetBool("gemini_google_search_call") {
-		items = collectToolSurchargeItem(items, dto.BuildInToolGoogleSearch, 1, summary.ModelName)
+		items = collectToolSurchargeItem(items, dto.BuildInToolGoogleSearch, 1, billingModelName)
 	}
 
 	summary.ToolSurchargeItems = mergeToolSurchargeItems(items)
@@ -229,7 +230,7 @@ func composeTieredTextQuota(relayInfo *relaycommon.RelayInfo, summary textQuotaS
 // the result with tiered billing, affinity observation and logging.
 func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage) textQuotaSummary {
 	summary := textQuotaSummary{
-		ModelName:            relayInfo.GetBillingModelName(),
+		ModelName:            relayInfo.GetLogModelName(),
 		TokenName:            ctx.GetString("token_name"),
 		UseTimeSeconds:       time.Now().Unix() - relayInfo.StartTime.Unix(),
 		CompletionRatio:      relayInfo.PriceData.CompletionRatio,
@@ -269,7 +270,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 
 	if isOpenRouterClaudeBilling {
 		summary.PromptTokens -= summary.CacheTokens
-		isUsingCustomSettings := relayInfo.PriceData.UsePrice || hasCustomModelRatio(summary.ModelName, relayInfo.PriceData.ModelRatio)
+		isUsingCustomSettings := relayInfo.PriceData.UsePrice || hasCustomModelRatio(relayInfo.GetBillingModelName(), relayInfo.PriceData.ModelRatio)
 		if summary.CacheCreationTokens == 0 && relayInfo.PriceData.CacheCreationRatio != 1 && usage.Cost != 0 && !isUsingCustomSettings {
 			maybeCacheCreationTokens := CalcOpenRouterCacheCreateTokens(*usage, relayInfo.PriceData)
 			if maybeCacheCreationTokens >= 0 && summary.PromptTokens >= maybeCacheCreationTokens {
@@ -332,7 +333,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 		}
 
 		if !dAudioTokens.IsZero() {
-			summary.AudioInputPrice = operation_setting.GetGeminiInputAudioPricePerMillionTokens(summary.ModelName)
+			summary.AudioInputPrice = operation_setting.GetGeminiInputAudioPricePerMillionTokens(relayInfo.GetBillingModelName())
 			if summary.AudioInputPrice > 0 {
 				baseTokens = baseTokens.Sub(dAudioTokens)
 				audioInputQuota = decimal.NewFromFloat(summary.AudioInputPrice).

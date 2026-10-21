@@ -29,13 +29,14 @@ import (
 type BillingSession struct {
 	relayInfo        *relaycommon.RelayInfo
 	funding          FundingSource
-	preConsumedQuota int  // 实际预扣额度（信任用户可能为 0）
-	tokenConsumed    int  // 令牌额度实际扣减量
-	extraReserved    int  // 发送前补充预扣的额度（订阅退款时需要单独回滚）
-	trusted          bool // 是否命中信任额度旁路
-	fundingSettled   bool // funding.Settle 已成功，资金来源已提交
-	settled          bool // Settle 全部完成（资金 + 令牌）
-	refunded         bool // Refund 已调用
+	preConsumedQuota int    // 实际预扣额度（信任用户可能为 0）
+	tokenConsumed    int    // 令牌额度实际扣减量
+	extraReserved    int    // 发送前补充预扣的额度（订阅退款时需要单独回滚）
+	trusted          bool   // 是否命中信任额度旁路
+	billingModelName string // 已授权预扣的定价模型
+	fundingSettled   bool   // funding.Settle 已成功，资金来源已提交
+	settled          bool   // Settle 全部完成（资金 + 令牌）
+	refunded         bool   // Refund 已调用
 	mu               sync.Mutex
 }
 
@@ -162,7 +163,8 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 		_, imageRequest = s.relayInfo.Request.(*dto.ImageRequest)
 		imageRequest = imageRequest || s.relayInfo.ImageRequestCount > 0
 	}
-	if s.settled || s.refunded || s.trusted && !imageRequest || targetQuota <= s.preConsumedQuota {
+	modelChanged := s.relayInfo != nil && s.billingModelName != s.relayInfo.GetBillingModelName()
+	if s.settled || s.refunded || s.trusted && !imageRequest && !modelChanged || targetQuota <= s.preConsumedQuota {
 		return nil
 	}
 
@@ -171,7 +173,7 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 		return nil
 	}
 
-	if err := s.reserveFunding(delta, imageRequest); err != nil {
+	if err := s.reserveFunding(delta, imageRequest || modelChanged); err != nil {
 		return err
 	}
 	if err := s.reserveToken(delta); err != nil {
@@ -182,9 +184,10 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 	s.preConsumedQuota += delta
 	s.tokenConsumed += delta
 	s.extraReserved += delta
-	if imageRequest {
+	if imageRequest || modelChanged {
 		s.trusted = false
 	}
+	s.billingModelName = s.relayInfo.GetBillingModelName()
 	s.syncRelayInfo()
 	return nil
 }
@@ -244,6 +247,7 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 	}
 
 	s.preConsumedQuota = effectiveQuota
+	s.billingModelName = s.relayInfo.GetBillingModelName()
 
 	// ---- 同步 RelayInfo 兼容字段 ----
 	s.syncRelayInfo()

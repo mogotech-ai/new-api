@@ -16,7 +16,7 @@ type ChatCompletionsToResponsesPolicy struct {
 	AllChannels   bool     `json:"all_channels"`
 	ChannelIDs    []int    `json:"channel_ids,omitempty"`
 	ChannelTypes  []int    `json:"channel_types,omitempty"`
-	ModelPatterns []string `json:"model_patterns,omitempty"`
+	ModelPatterns []string `json:"model_patterns,omitempty"` // Matches upstream model names after channel mapping.
 }
 
 func (p ChatCompletionsToResponsesPolicy) IsChannelEnabled(channelID int, channelType int) bool {

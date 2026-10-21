@@ -5,14 +5,17 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	hostreasoning "github.com/QuantumNous/new-api/setting/reasoning"
@@ -69,12 +72,8 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 }
 
 func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (hosttypes.PriceData, error) {
-	if info != nil {
-		if matched := resolveBillingModelName(info.GetOriginModelName()); matched != "" && matched != info.OriginModelName {
-			info.BillingModelName = matched
-		}
-	}
-	billingModelName := info.GetBillingModelName()
+	billingModelName := ResolveBillingModel(info, false)
+	info.TieredBillingSnapshot = nil
 	modelPrice, usePrice := ratio_setting.GetModelPrice(billingModelName, false)
 
 	groupRatioInfo := HandleGroupRatio(c, info)
@@ -214,21 +213,22 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 
 // ModelPriceHelperPerCall 按次/按量计费的 PriceHelper (MJ、Task)
 func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (hosttypes.PriceData, error) {
+	billingModelName := ResolveBillingModel(info, true)
 	groupRatioInfo := HandleGroupRatio(c, info)
 
-	modelPrice, success := ratio_setting.GetModelPrice(info.OriginModelName, true)
+	modelPrice, success := ratio_setting.GetModelPrice(billingModelName, true)
 	usePrice := success
 	var modelRatio float64
 
 	if !success {
-		defaultPrice, ok := ratio_setting.GetDefaultModelPriceMap()[info.OriginModelName]
+		defaultPrice, ok := ratio_setting.GetDefaultModelPriceMap()[billingModelName]
 		if ok {
 			modelPrice = defaultPrice
 			usePrice = true
 		} else {
 			var ratioSuccess bool
 			var matchName string
-			modelRatio, ratioSuccess, matchName = ratio_setting.GetModelRatio(info.OriginModelName)
+			modelRatio, ratioSuccess, matchName = ratio_setting.GetModelRatio(billingModelName)
 			acceptUnsetRatio := false
 			if info.UserSetting.AcceptUnsetRatioModel {
 				acceptUnsetRatio = true
@@ -337,6 +337,57 @@ func resolveBillingModelName(origin string) string {
 		matched = base
 	}
 	return matched
+}
+
+func ResolveBillingModel(info *relaycommon.RelayInfo, perCall bool) string {
+	matched := info.OriginModelName
+	if !perCall {
+		matched = resolveBillingModelName(matched)
+	}
+	info.RequestedBillingModelName = matched
+	info.PricingSource = "requested"
+	info.PricingFallback = false
+	upstream := info.GetUpstreamModelName()
+	if info.TaskRelayInfo == nil && info.RelayFormat != types.RelayFormatOpenAIRealtime && info.ChannelMeta != nil &&
+		(model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled) {
+		bodySelectsModel := true
+		switch info.ApiType {
+		case constant.APITypeGemini, constant.APITypeAws, constant.APITypeZhipu, constant.APITypeBaidu:
+			bodySelectsModel = false
+		case constant.APITypeCloudflare:
+			bodySelectsModel = info.RelayMode == relayconstant.RelayModeChatCompletions ||
+				info.RelayMode == relayconstant.RelayModeResponses || info.RelayMode == relayconstant.RelayModeEmbeddings
+		case constant.APITypeVertexAi:
+			bodySelectsModel = strings.Contains(upstream, "llama") || strings.Contains(upstream, "-maas")
+		case constant.APITypeOpenAI:
+			bodySelectsModel = !(info.ChannelType == constant.ChannelTypeAzure && !strings.Contains(info.RequestURLPath, "/responses")) &&
+				!(info.ChannelType == constant.ChannelTypeCustom && strings.Contains(info.ChannelBaseUrl, "{model}"))
+		case constant.APITypeAdvancedCustom:
+			requestPath, _, _ := strings.Cut(info.RequestURLPath, "?")
+			route, ok := info.ChannelOtherSettings.AdvancedCustom.MatchPathForModel(requestPath, info.OriginModelName)
+			bodySelectsModel = !ok || !strings.Contains(route.UpstreamPath, "{model}")
+		}
+		if bodySelectsModel {
+			switch info.Request.(type) {
+			case *dto.GeneralOpenAIRequest, *dto.ClaudeRequest, *dto.OpenAIResponsesRequest, *dto.OpenAIResponsesCompactionRequest, *dto.ImageRequest, *dto.RerankRequest, *dto.GeminiChatRequest:
+				upstream = info.OriginModelName
+			}
+		}
+	}
+	if upstream != "" && upstream != info.OriginModelName {
+		upstreamBilling := resolveBillingModelName(upstream)
+		if HasPriceOrRatioEntry(upstreamBilling) {
+			matched = upstreamBilling
+			info.PricingSource = "upstream"
+		} else {
+			info.PricingFallback = true
+		}
+	}
+	info.BillingModelName = ""
+	if matched != info.OriginModelName {
+		info.BillingModelName = matched
+	}
+	return info.GetBillingModelName()
 }
 
 func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billingModelName string, promptTokens int, groupRatioInfo hosttypes.GroupRatioInfo) (hosttypes.PriceData, error) {

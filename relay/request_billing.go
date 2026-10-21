@@ -18,9 +18,9 @@ import (
 	"github.com/samber/lo"
 )
 
-// PrepareRequestBilling estimates and reserves one request's charge. Transports
+// PrepareRequestBilling validates and estimates one request. Transports
 // provide the current request body through BodyStorage or BillingRequestInput;
-// channel retries retain the resulting billing session and pricing snapshot.
+// channel retries retain the billing session and original estimation inputs.
 func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
 	needSensitiveCheck := setting.ShouldCheckPromptSensitive()
 	meta := &types.TokenCountMeta{TokenType: types.TokenTypeTokenizer}
@@ -54,16 +54,19 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 		return types.NewError(err, types.ErrorCodeCountTokenFailed)
 	}
 	info.SetEstimatePromptTokens(tokens)
+	info.BillingTokenCountMeta = meta
+	return nil
+}
 
-	priceData, err := helper.ModelPriceHelper(c, info, tokens, meta)
-	if err != nil {
-		return types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest))
+func PrepareSelectedChannelBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
+	info.InitChannelMeta(c)
+	if err := helper.ModelMappedHelper(c, info, nil); err != nil {
+		return types.NewError(err, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
 	}
-	if priceData.FreeModel {
-		logger.LogInfo(c, fmt.Sprintf("模型 %s 免费，跳过预扣费", info.OriginModelName))
-		return nil
+	if _, err := helper.ModelPriceHelper(c, info, info.GetEstimatePromptTokens(), info.BillingTokenCountMeta); err != nil {
+		return types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithStatusCode(http.StatusBadRequest), types.ErrOptionWithSkipRetry())
 	}
-	return service.PreConsumeBilling(c, priceData.QuotaToPreConsume, info)
+	return service.PrepareTieredBillingForSelectedGroup(c, info)
 }
 
 // RefundFailedRequestBilling applies the common final-failure policy after all

@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -16,11 +17,86 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	relaytypes "github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type policyTestTransport struct {
+	path     string
+	body     []byte
+	calls    int
+	response string
+}
+
+func (s *policyTestTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	s.calls++
+	s.path = r.URL.Path
+	var err error
+	s.body, err = io.ReadAll(r.Body)
+	if err != nil {
+		return nil, err
+	}
+	if s.response != "" {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(s.response)), Request: r}, nil
+	}
+	return &http.Response{StatusCode: http.StatusBadRequest, Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(`{"error":{"message":"policy test","type":"invalid_request_error"}}`)), Request: r}, nil
+}
+
+func TestChatResponsesPolicyMatchesMappedModel(t *testing.T) {
+	if service.GetHttpClient() == nil {
+		service.InitHttpClient()
+	}
+	client := service.GetHttpClient()
+	previousTransport := client.Transport
+	previous := model_setting.GetGlobalSettings().ChatCompletionsToResponsesPolicy
+	previousPassThrough := model_setting.GetGlobalSettings().PassThroughRequestEnabled
+	t.Cleanup(func() {
+		client.Transport = previousTransport
+		model_setting.GetGlobalSettings().ChatCompletionsToResponsesPolicy = previous
+		model_setting.GetGlobalSettings().PassThroughRequestEnabled = previousPassThrough
+	})
+	model_setting.GetGlobalSettings().PassThroughRequestEnabled = false
+	model_setting.GetGlobalSettings().ChatCompletionsToResponsesPolicy = model_setting.ChatCompletionsToResponsesPolicy{
+		Enabled: true, ChannelTypes: []int{constant.ChannelTypeOpenAI}, ModelPatterns: []string{"^gpt-"},
+	}
+	for _, format := range []relaytypes.RelayFormat{relaytypes.RelayFormatOpenAI, relaytypes.RelayFormatClaude} {
+		for _, tc := range []struct {
+			name, model, mapping, path string
+		}{
+			{"mapped to GPT", "gemini-x", `{"gemini-x":"gpt-6.1-sol"}`, "/v1/responses"},
+			{"mapped away from GPT", "gpt-x", `{"gpt-x":"non-gpt"}`, "/v1/chat/completions"},
+			{"unmapped GPT", "gpt-6.1-sol", "", "/v1/responses"},
+			{"unmapped other", "gemini-x", "", "/v1/chat/completions"},
+		} {
+			t.Run(string(format)+"/"+tc.name, func(t *testing.T) {
+				transport := &policyTestTransport{}
+				client.Transport = transport
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+				common.SetContextKey(c, constant.ContextKeyOriginalModel, tc.model)
+				common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+				common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, "https://policy.invalid")
+				c.Set("model_mapping", tc.mapping)
+				info := &relaycommon.RelayInfo{OriginModelName: tc.model, RelayMode: relayconstant.RelayModeChatCompletions, RelayFormat: format, RequestURLPath: "/v1/chat/completions"}
+				var apiErr *relaytypes.NewAPIError
+				if format == relaytypes.RelayFormatClaude {
+					info.Request = &dto.ClaudeRequest{Model: tc.model, Messages: []dto.ClaudeMessage{{Role: "user", Content: "hello"}}}
+					apiErr = ClaudeHelper(c, info)
+				} else {
+					info.Request = &dto.GeneralOpenAIRequest{Model: tc.model, Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+					apiErr = TextHelper(c, info)
+				}
+				require.NotNil(t, apiErr)
+				assert.Equal(t, tc.path, transport.path, "%v", apiErr)
+			})
+		}
+	}
+}
 
 func TestPrepareResponsesRequestRetainsConvertedAdaptor(t *testing.T) {
 	type capturedRequest struct {

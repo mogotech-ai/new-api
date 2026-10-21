@@ -165,6 +165,12 @@ func refreshTieredBillingGroup(relayInfo *relaycommon.RelayInfo) (*billingexpr.B
 // estimate before sending. If the initial group was free and skipped
 // pre-consume, switching to a paid group creates the session at that point.
 func PrepareTieredBillingForSelectedGroup(c *gin.Context, relayInfo *relaycommon.RelayInfo) *types.NewAPIError {
+	if relayInfo == nil {
+		return nil
+	}
+	if relayInfo.QuotaClamp != nil {
+		return types.NewErrorWithStatusCode(relayInfo.QuotaClamp, types.ErrorCodeModelPriceError, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	}
 	snap, err := refreshTieredBillingGroup(relayInfo)
 	if err != nil {
 		return types.NewErrorWithStatusCode(
@@ -174,25 +180,30 @@ func PrepareTieredBillingForSelectedGroup(c *gin.Context, relayInfo *relaycommon
 			types.ErrOptionWithSkipRetry(),
 		)
 	}
-	if snap == nil {
+	target := relayInfo.PriceData.QuotaToPreConsume
+	if snap != nil {
+		target = snap.EstimatedQuotaAfterGroup
+		if snap.GroupRatio != 0 {
+			relayInfo.PriceData.FreeModel = false
+		}
+	}
+	if relayInfo.Billing != nil {
+		relayInfo.PriceData.FreeModel = false
+		if relayInfo.PriceData.GroupRatioInfo.GroupRatio == 0 {
+			return nil
+		}
+	}
+	if relayInfo.PriceData.FreeModel {
 		return nil
 	}
-	if snap.GroupRatio == 0 {
-		// Paid-to-free keeps FreeModel as-is: FreeModel means "pre-consume was
-		// skipped", which is not true once a session exists, and settlement
-		// already yields 0 for a zero group ratio.
-		return nil
-	}
-
-	// The selected group is paid; clear a FreeModel flag frozen when the
-	// initial group was free so downstream state stays consistent.
-	relayInfo.PriceData.FreeModel = false
 
 	if relayInfo.Billing == nil {
-		return PreConsumeBilling(c, snap.EstimatedQuotaAfterGroup, relayInfo)
+		return PreConsumeBilling(c, target, relayInfo)
 	}
-	if err := relayInfo.Billing.Reserve(snap.EstimatedQuotaAfterGroup); err != nil {
-		return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+	if target > relayInfo.Billing.GetPreConsumedQuota() {
+		if err := relayInfo.Billing.Reserve(target); err != nil {
+			return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+		}
 	}
 	relayInfo.FinalPreConsumedQuota = relayInfo.Billing.GetPreConsumedQuota()
 	return nil

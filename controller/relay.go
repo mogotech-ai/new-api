@@ -167,7 +167,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		service.AppendUsedChannel(c, channel.Id)
-		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
+		if billingErr := relay.PrepareSelectedChannelBilling(c, relayInfo); billingErr != nil {
 			newAPIError = billingErr
 			break
 		}
@@ -597,7 +597,7 @@ func executeTaskSubmissionWith(
 	// Reserve any submit-time upward billing adjustment before persistence.
 	// This keeps insertion failures fully refundable while ensuring settlement
 	// after the barrier normally has a zero positive delta.
-	if relayInfo.Billing != nil {
+	if relayInfo.Billing != nil && result.Quota > relayInfo.Billing.GetPreConsumedQuota() {
 		stage = "reserve"
 		diagnostics.reserve("reserve_start", result.Quota)
 		if reserveErr := relayInfo.Billing.Reserve(result.Quota); reserveErr != nil {
@@ -629,6 +629,9 @@ func executeTaskSubmissionWith(
 		OriginModelName: relayInfo.OriginModelName,
 		PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
 		TieredSnapshot:  relayInfo.TieredBillingSnapshot,
+	}
+	if relayInfo.PricingSource == "upstream" {
+		task.PrivateData.BillingContext.BillingModelName = relayInfo.GetBillingModelName()
 	}
 	task.Quota = result.Quota
 	task.Data = result.TaskData
