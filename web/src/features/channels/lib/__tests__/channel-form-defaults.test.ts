@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { describe, expect, test } from 'vitest'
 
 import { channelSchema } from '../../types'
+import { getChannelConfigurationState } from '../channel-configuration'
 import {
   CHANNEL_FORM_DEFAULT_VALUES,
   buildSettingJSON,
@@ -51,5 +52,18 @@ describe('channel logging defaults', () => {
     expect(
       transformChannelToFormDefaults(channel).log_request_response_enabled
     ).toBe(false)
+  })
+
+  test('does not mark request processing configured for the new-channel default', () => {
+    const state = (log: boolean, isEditing: boolean) =>
+      getChannelConfigurationState(
+        { ...CHANNEL_FORM_DEFAULT_VALUES, log_request_response_enabled: log },
+        {},
+        isEditing
+      ).blocks.requestProcessing
+    expect(state(true, false)).toBe('idle')
+    expect(state(false, false)).toBe('configured')
+    expect(state(true, true)).toBe('configured')
+    expect(state(false, true)).toBe('idle')
   })
 })
