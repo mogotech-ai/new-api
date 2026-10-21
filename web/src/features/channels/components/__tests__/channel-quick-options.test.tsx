@@ -284,6 +284,7 @@ test('request and response logging is an explicit channel option', async () => {
   render(
     <QuickOptionsHarness
       confirm={() => Promise.resolve(true)}
+      values={{ log_request_response_enabled: false }}
       onSave={(values) => saved.push(values)}
     />
   )
