@@ -1,11 +1,118 @@
 package model
 
 import (
+	"fmt"
+	"os"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
+
+// Schema from v1.0.0-rc.44, before mapped-model and cache-token statistics.
+type releasedQuotaData struct {
+	Id        int    `json:"id"`
+	UserID    int    `json:"user_id" gorm:"index"`
+	Username  string `json:"username" gorm:"index:idx_qdt_model_user_name,priority:2;size:64;default:''"`
+	ModelName string `json:"model_name" gorm:"index:idx_qdt_model_user_name,priority:1;size:64;default:''"`
+	CreatedAt int64  `json:"created_at" gorm:"bigint;index:idx_qdt_created_at,priority:2"`
+	UseGroup  string `json:"use_group" gorm:"index;size:64;default:''"`
+	TokenID   int    `json:"token_id" gorm:"index;default:0"`
+	ChannelID int    `json:"channel_id" gorm:"index;default:0"`
+	NodeName  string `json:"node_name" gorm:"index;size:64;default:''"`
+	TokenUsed int    `json:"token_used" gorm:"default:0"`
+	Count     int    `json:"count" gorm:"default:0"`
+	Quota     int    `json:"quota" gorm:"default:0"`
+}
+
+func (releasedQuotaData) TableName() string { return "quota_data" }
+
+func TestQuotaDataDatabaseMatrix(t *testing.T) {
+	for _, dialect := range []struct{ kind, env string }{{"sqlite", ""}, {"mysql", "TEST_MYSQL_DSN"}, {"postgres", "TEST_POSTGRES_DSN"}} {
+		t.Run(dialect.kind, func(t *testing.T) {
+			dsn := os.Getenv(dialect.env)
+			if dialect.env == "" {
+				previousPath := common.SQLitePath
+				common.SQLitePath = t.TempDir() + "/quota.db"
+				t.Cleanup(func() { common.SQLitePath = previousPath })
+				dsn = "local"
+			} else if dsn == "" {
+				t.Skip(dialect.env + " is not configured")
+			}
+			t.Setenv("QUOTA_DATA_TEST_DSN", dsn)
+			db, typ, err := chooseDB("QUOTA_DATA_TEST_DSN", false)
+			require.NoError(t, err)
+			sqlDB, err := db.DB()
+			require.NoError(t, err)
+			sqlDB.SetMaxOpenConns(1)
+			previousDB, previousType, previousMemory := DB, common.MainDatabaseType(), common.MemoryCacheEnabled
+			DB, common.MemoryCacheEnabled = db, false
+			common.SetMainDatabaseType(typ)
+			initCol()
+			t.Cleanup(func() {
+				DB, common.MemoryCacheEnabled = previousDB, previousMemory
+				common.SetMainDatabaseType(previousType)
+				initCol()
+				require.NoError(t, sqlDB.Close())
+			})
+			versionSQL := "SELECT version()"
+			if dialect.kind == "sqlite" {
+				versionSQL = "SELECT sqlite_version()"
+			}
+			var version string
+			require.NoError(t, db.Raw(versionSQL).Scan(&version).Error)
+			t.Logf("database version: %s", version)
+			for _, upgrade := range []bool{false, true} {
+				t.Run(fmt.Sprintf("upgrade=%v", upgrade), func(t *testing.T) {
+					require.NoError(t, db.Migrator().DropTable(&QuotaData{}, &Channel{}))
+					t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable(&QuotaData{}, &Channel{})) })
+					require.NoError(t, db.AutoMigrate(&Channel{}))
+					expected := QuotaData{Id: 1, UserID: 7, Username: "legacy", ModelName: "alias", CreatedAt: 3600, UseGroup: "vip", TokenID: 11, ChannelID: 1, NodeName: "node-a", TokenUsed: 99, Count: 2, Quota: 77}
+					if upgrade {
+						require.NoError(t, db.AutoMigrate(&releasedQuotaData{}))
+						require.NoError(t, db.Create(&releasedQuotaData{Id: 1, UserID: 7, Username: "legacy", ModelName: "alias", CreatedAt: 3600, UseGroup: "vip", TokenID: 11, ChannelID: 1, NodeName: "node-a", TokenUsed: 99, Count: 2, Quota: 77}).Error)
+					} else {
+						require.NoError(t, db.AutoMigrate(&QuotaData{}))
+						expected.UpstreamModelName, expected.CacheReadTokens, expected.CacheCreationTokens = "served-model", 5, 7
+						require.NoError(t, db.Create(&expected).Error)
+					}
+					originalIndexes, err := db.Migrator().GetIndexes(&QuotaData{})
+					require.NoError(t, err)
+					recorder := &migrationSQLRecorder{}
+					for run := range 2 {
+						recorder.reset()
+						require.NoError(t, db.Session(&gorm.Session{Logger: recorder}).AutoMigrate(&QuotaData{}))
+						if run == 1 {
+							assert.Empty(t, recorder.schemaMutations(), "restarting must not repeat schema changes")
+						}
+					}
+					var stored QuotaData
+					require.NoError(t, db.First(&stored, 1).Error)
+					assert.Equal(t, expected, stored)
+					indexes, err := db.Migrator().GetIndexes(&QuotaData{})
+					require.NoError(t, err)
+					byName := make(map[string]gorm.Index, len(indexes))
+					for _, index := range indexes {
+						byName[index.Name()] = index
+					}
+					for _, original := range originalIndexes {
+						preserved, ok := byName[original.Name()]
+						require.True(t, ok, "existing index %s must remain", original.Name())
+						assert.ElementsMatch(t, original.Columns(), preserved.Columns(), original.Name())
+						originalUnique, originalKnown := original.Unique()
+						preservedUnique, preservedKnown := preserved.Unique()
+						assert.Equal(t, originalKnown, preservedKnown, original.Name())
+						assert.Equal(t, originalUnique, preservedUnique, original.Name())
+					}
+					require.NoError(t, db.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&QuotaData{}).Error)
+					testAdminQuotaDataReportsMappedUpstreamModel(t)
+				})
+			}
+		})
+	}
+}
 
 func seedFlowQuotaData(t *testing.T, quotaData QuotaData) {
 	t.Helper()
@@ -194,6 +301,11 @@ func TestLogQuotaDataSplitsRowsByUseGroupTokenChannelAndNode(t *testing.T) {
 
 func TestAdminQuotaDataReportsMappedUpstreamModel(t *testing.T) {
 	truncateTables(t)
+	testAdminQuotaDataReportsMappedUpstreamModel(t)
+}
+
+func testAdminQuotaDataReportsMappedUpstreamModel(t *testing.T) {
+	t.Helper()
 	CacheQuotaDataLock.Lock()
 	CacheQuotaData = make(map[string]*QuotaData)
 	CacheQuotaDataLock.Unlock()
@@ -201,12 +313,15 @@ func TestAdminQuotaDataReportsMappedUpstreamModel(t *testing.T) {
 	direct := QuotaDataLogParams{
 		UserID: 1, Username: "alice", ModelName: "gemini", CreatedAt: 3661,
 		UseGroup: "vip", TokenID: 11, ChannelID: 1, NodeName: "node-a", Quota: 100, TokenUsed: 40,
+		CacheReadTokens: 10, CacheCreationTokens: 20,
 	}
 	// The retry lands on a channel that maps gemini to deepseek.
 	mapped := direct
 	mapped.ChannelID = 2
 	mapped.UpstreamModelName = "deepseek"
 	mapped.Quota = 30
+	mapped.CacheReadTokens = 3
+	mapped.CacheCreationTokens = 5
 
 	LogQuotaData(direct)
 	LogQuotaData(mapped)
@@ -234,11 +349,25 @@ func TestAdminQuotaDataReportsMappedUpstreamModel(t *testing.T) {
 	adminUserRows, err := GetAllQuotaDates(0, 7200, "alice")
 	require.NoError(t, err)
 	require.Equal(t, map[string]int{"gemini": 100, "deepseek": 60}, quotaByModel(adminUserRows))
+	for _, rows := range [][]*QuotaData{adminRows, adminUserRows} {
+		for _, row := range rows {
+			if row.ModelName == "deepseek" {
+				assert.EqualValues(t, 6, row.CacheReadTokens)
+				assert.EqualValues(t, 10, row.CacheCreationTokens)
+			} else {
+				assert.EqualValues(t, 10, row.CacheReadTokens)
+				assert.EqualValues(t, 20, row.CacheCreationTokens)
+			}
+		}
+	}
 
 	// Users keep seeing the model they requested; the mapping stays hidden.
 	selfRows, err := GetQuotaDataByUserId(1, 0, 7200)
 	require.NoError(t, err)
 	require.Equal(t, map[string]int{"gemini": 160}, quotaByModel(selfRows))
+	require.Len(t, selfRows, 1)
+	assert.EqualValues(t, 16, selfRows[0].CacheReadTokens)
+	assert.EqualValues(t, 30, selfRows[0].CacheCreationTokens)
 
 	flowRows, err := GetFlowQuotaData(0, 7200, "", 0, common.RoleAdminUser)
 	require.NoError(t, err)

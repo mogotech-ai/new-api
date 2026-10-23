@@ -305,7 +305,7 @@ func TestLocalBalanceAndRelayPayloadDatabaseMatrix(t *testing.T) {
 			for i := range requestIds {
 				requestIds[i] = fmt.Sprintf("req-%d", i+3)
 			}
-			logs, total, err := GetAllLogs(LogTypeUnknown, 0, 0, "", "", "", 0, 10, 0, "", "", "", requestIds)
+			logs, total, err := GetAllLogs(LogFilter{RequestIds: requestIds}, 0, 10)
 			require.NoError(t, err)
 			assert.EqualValues(t, 1, total)
 			require.Len(t, logs, 1)

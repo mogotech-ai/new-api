@@ -345,34 +345,53 @@ func TestOaiResponsesToChatHandlersCountWebSearchCalls(t *testing.T) {
 	constant.StreamingTimeout = 30
 	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
 
-	body := strings.Join([]string{
-		`data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-test","created_at":1710000000}}`,
-		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"web_search_call","id":"ws_1","status":"completed"}}`,
-		`data: {"type":"response.output_text.delta","output_index":1,"delta":"hello"}`,
-		`data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"web_search_call","id":"ws_1","status":"completed"},{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}`,
-		`data: [DONE]`,
-		``,
-	}, "\n")
-
-	tests := []struct {
-		name    string
-		stream  bool
-		handler func(*gin.Context, *relaycommon.RelayInfo, *http.Response) (*dto.Usage, *types.NewAPIError)
+	for _, usage := range []struct {
+		name, vendorUsage    string
+		wantSearch, wantBing int
 	}{
-		{name: "client stream", stream: true, handler: OaiResponsesToChatStreamHandler},
-		{name: "buffered stream", stream: false, handler: OaiResponsesToChatBufferedStreamHandler},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c, _, resp, info := newResponsesChatTestContext(t, body, tt.stream)
-			info.ResponsesUsageInfo = &relaycommon.ResponsesUsageInfo{BuiltInTools: map[string]*relaycommon.BuildInToolInfo{
-				dto.BuildInToolWebSearch: {ToolName: dto.BuildInToolWebSearch},
-			}}
+		{name: "protocol count", wantSearch: 1},
+		{name: "vendor count replaces protocol count", vendorUsage: `,"tool_usage":{"web_search":{"num_requests":5}}`, wantBing: 5},
+		{name: "explicit vendor zero", vendorUsage: `,"tool_usage":{"web_search":{"num_requests":0}}`},
+	} {
+		response := `{"id":"resp_1","model":"gpt-test","created_at":1710000000,"status":"completed","output":[{"type":"web_search_call","id":"ws_1","status":"completed"},{"type":"message","id":"msg_1","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}` + usage.vendorUsage + `}`
+		stream := strings.Join([]string{
+			`data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-test","created_at":1710000000}}`,
+			`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"web_search_call","id":"ws_1","status":"completed"}}`,
+			`data: {"type":"response.output_text.delta","output_index":1,"delta":"hello"}`,
+			`data: {"type":"response.completed","response":` + response + `}`,
+			`data: [DONE]`,
+			``,
+		}, "\n")
 
-			_, err := tt.handler(c, info, resp)
-			require.Nil(t, err)
-			assert.Equal(t, 1, info.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolWebSearch].CallCount)
-			assert.NotContains(t, info.ResponsesUsageInfo.BuiltInTools, dto.BuildInToolWebSearchPreview)
-		})
+		for _, tt := range []struct {
+			name, body string
+			stream     bool
+			handler    func(*gin.Context, *relaycommon.RelayInfo, *http.Response) (*dto.Usage, *types.NewAPIError)
+		}{
+			{name: "json", body: response, handler: OaiResponsesToChatHandler},
+			{name: "client stream", body: stream, stream: true, handler: OaiResponsesToChatStreamHandler},
+			{name: "buffered stream", body: stream, handler: OaiResponsesToChatBufferedStreamHandler},
+		} {
+			t.Run(usage.name+"/"+tt.name, func(t *testing.T) {
+				c, _, resp, info := newResponsesChatTestContext(t, tt.body, tt.stream)
+				info.ResponsesUsageInfo = &relaycommon.ResponsesUsageInfo{BuiltInTools: map[string]*relaycommon.BuildInToolInfo{
+					dto.BuildInToolWebSearch: {ToolName: dto.BuildInToolWebSearch},
+				}}
+				if usage.vendorUsage != "" {
+					info.VendorToolUsage = azureResponsesToolUsage
+				}
+
+				_, err := tt.handler(c, info, resp)
+				require.Nil(t, err)
+				assert.Equal(t, usage.wantSearch, info.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolWebSearch].CallCount)
+				if usage.vendorUsage != "" {
+					require.Contains(t, info.ResponsesUsageInfo.BuiltInTools, "bing_web_search")
+					assert.Equal(t, usage.wantBing, info.ResponsesUsageInfo.BuiltInTools["bing_web_search"].CallCount)
+					assert.Zero(t, info.ResponsesUsageInfo.BuiltInTools[dto.BuildInToolWebSearchPreview].CallCount)
+				} else {
+					assert.NotContains(t, info.ResponsesUsageInfo.BuiltInTools, dto.BuildInToolWebSearchPreview)
+				}
+			})
+		}
 	}
 }

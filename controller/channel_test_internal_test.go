@@ -220,7 +220,7 @@ func TestCopyChannelResetBalanceTurnsOffLocalBalanceLimit(t *testing.T) {
 
 			require.Contains(t, recorder.Body.String(), `"success":true`)
 			var copied model.Channel
-			require.NoError(t, db.Where("name = ?", origin.Name+"_复制").First(&copied).Error)
+			require.NoError(t, db.Where("name = ?", origin.Name+"_copy").First(&copied).Error)
 			assert.Equal(t, tc.wantBalance, copied.Balance)
 			assert.Equal(t, tc.wantLimit, copied.GetSetting().LocalBalanceEnabled)
 			// The source channel keeps its own limit.
@@ -531,5 +531,5 @@ func TestTestAllChannelsRejectsExistingActiveTask(t *testing.T) {
 
 	require.Equal(t, http.StatusConflict, recorder.Code)
 	require.Contains(t, recorder.Body.String(), existing.TaskID)
-	require.Contains(t, recorder.Body.String(), "已有通道测试任务正在运行或等待中")
+	require.Contains(t, recorder.Body.String(), "A channel test task is already running or queued")
 }

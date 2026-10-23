@@ -534,7 +534,7 @@ func TestSelectedChannelRealtimeSettlementUsesPricingModel(t *testing.T) {
 				InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100,
 				InputTokenDetails:  dto.InputTokenDetails{TextTokens: 1000},
 				OutputTokenDetails: dto.OutputTokenDetails{TextTokens: 100},
-			}, "")
+			}, nil)
 			var log model.Log
 			require.NoError(t, model.LOG_DB.First(&log).Error)
 			assert.Equal(t, "pricing-requested", log.ModelName)

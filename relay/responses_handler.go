@@ -95,7 +95,7 @@ func ConsumeResponsesQuota(c *gin.Context, info *relaycommon.RelayInfo, usage *d
 		billingModel = info.GetBillingModelName()
 	}
 	if strings.HasPrefix(billingModel, "gpt-4o-audio") {
-		service.PostAudioConsumeQuota(c, info, usage, "")
+		service.PostAudioConsumeQuota(c, info, usage, nil)
 		return
 	}
 	service.PostTextConsumeQuota(c, info, usage, nil)
