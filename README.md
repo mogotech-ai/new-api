@@ -1,3 +1,34 @@
+> [!NOTE]
+> 本仓库是 [QuantumNous/new-api](https://github.com/QuantumNous/new-api) 的 mogotech-ai 二开版本，定期合并上游。下面列出相对上游新增或修改的功能，合并上游时须保留。
+
+## 二开特性
+
+**ChatGPT 账号接入（SIWC）**
+- OpenAI 渠道可导入 Sign in with ChatGPT 凭据，或在渠道表单中点“使用 ChatGPT 登录”直接生成。
+- 主节点自动续期并轮换 refresh token；授权失效时清除凭据，并按渠道的自动禁用设置停用渠道。
+- SIWC 渠道的 Chat 请求自动转为 Responses 上游，支持非流式 Chat；渠道测试与获取模型列表也适配 SIWC。
+
+**计费**
+- 渠道把请求模型映射到已定价的上游模型时，预扣与结算都按上游模型计费；上游模型未定价时回退到请求模型价格。管理员日志记录实际定价来源。
+- Chat 转 Responses 路径计入 web_search、file_search 等托管工具调用费用，并剔除 gpt-6.1-sol 等模型不支持的采样参数。
+- `chat_completions_to_responses_policy` 的模型匹配按映射后的上游模型名。
+- 渠道本地余额限额可在快捷操作中开关；复制渠道并重置余额时自动关闭限额。
+
+**请求与响应内容记录**
+- 渠道可开启请求、响应体记录（独立的 `relay_payloads` 表，完整保存不截断），新建渠道默认开启；原生 Responses 接口同样记录。
+- 使用日志中可全宽查看、复制、下载请求与响应体（JSON 美化、长行换行、转义换行显示为真实换行）。
+- root 用户可按请求或响应内容中的关键词筛选使用日志（时间范围最多 7 天，最多 5000 条匹配）。
+
+**统计与通知**
+- 管理员仪表盘与模型性能统计按实际调用的上游模型（映射后）归类，普通用户仍看到自己请求的模型。
+- 渠道告警 webhook 支持飞书、Lark 机器人格式（含签名校验）。
+
+**协议转换**
+- OpenAI Chat 转 Claude 时保留文本块的 prompt `cache_control`。
+- Claude 联网搜索引用转为 Chat annotations 时附带引用区间。
+
+---
+
 <div align="center">
 
 ![new-api](/web/public/logo.png)
