@@ -110,6 +110,10 @@ func createSIWCTestChannel(t *testing.T, id int) *model.Channel {
 
 func TestSIWCCredentialsRefreshAllChannelsAndPreserveAPIKeys(t *testing.T) {
 	client := setupSIWCCredentialTest(t)
+	// A sync period as long as the token lifetime must not make a fresh token due again on the next scan.
+	previousSync := common.SyncFrequency
+	common.SyncFrequency = 1800
+	t.Cleanup(func() { common.SyncFrequency = previousSync })
 	for _, id := range []int{17, 42} {
 		createSIWCTestChannel(t, id)
 	}

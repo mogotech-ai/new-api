@@ -82,6 +82,13 @@ func TestSIWCModelCatalogUsesOnlyAccessToken(t *testing.T) {
 	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
 	require.True(t, response.Success, response.Message)
 	assert.Equal(t, []string{"standard-model"}, response.Data)
+
+	// A malformed or empty catalog must fail instead of reading as "every model removed".
+	for _, malformed := range []string{`{"models":"invalid catalog"}`, `{"models":[]}`, `{"object":"list"}`} {
+		catalog = malformed
+		_, err = fetchChannelUpstreamModelIDs(channel)
+		assert.Error(t, err, malformed)
+	}
 }
 
 func TestParseOpenAIModelIDsStrictResponseContract(t *testing.T) {

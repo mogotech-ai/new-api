@@ -22,14 +22,16 @@ import (
 const (
 	siwcTokenURL     = "https://auth.openai.com/api/accounts/oauth/token"
 	siwcMaxExpiresIn = 30 * 24 * 60 * 60
+	// Half the documented one-hour access-token lifetime, so a freshly issued token is never due again.
+	siwcMaxRefreshLead = 30 * time.Minute
 )
 
 var siwcRefreshOnce sync.Once
 
-// Non-master nodes only see a rotated key after SYNC_FREQUENCY, so refresh at least two sync periods early.
+// Non-master nodes only see a rotated key after SYNC_FREQUENCY, so refresh two sync periods early, within the cap.
 func siwcRefreshDue(key *common.SIWCCredential) bool {
 	now := time.Now()
-	lead := max(5*time.Minute, 2*time.Duration(common.SyncFrequency)*time.Second)
+	lead := min(max(5*time.Minute, 2*time.Duration(common.SyncFrequency)*time.Second), siwcMaxRefreshLead)
 	return !key.ReauthRequired && key.ExpiresAt <= now.Add(lead).Unix() && key.EarliestRefreshAt <= now.Unix()
 }
 
@@ -37,6 +39,9 @@ func StartSIWCCredentialAutoRefreshTask() {
 	siwcRefreshOnce.Do(func() {
 		if !common.IsMasterNode {
 			return
+		}
+		if 2*time.Duration(common.SyncFrequency)*time.Second > siwcMaxRefreshLead {
+			common.SysError(common.LogText("SYNC_FREQUENCY=%ds exceeds half of the SIWC refresh lead (%s); non-master nodes may send expired SIWC access tokens", common.SyncFrequency, siwcMaxRefreshLead))
 		}
 		go func() {
 			ticker := time.NewTicker(time.Minute)
