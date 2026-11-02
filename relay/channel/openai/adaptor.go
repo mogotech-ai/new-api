@@ -191,6 +191,24 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 
 func (a *Adaptor) SetupRequestHeader(c *gin.Context, header *http.Header, info *relaycommon.RelayInfo) error {
 	channel.SetupApiRequestHeader(info, c, header)
+	if info.ChannelType == constant.ChannelTypeOpenAI {
+		credential, err := common.ParseSIWCCredential(info.ApiKey)
+		if err != nil {
+			return err
+		}
+		if credential != nil {
+			return errors.New("SIWC credentials must be initialized before relay")
+		}
+	}
+	if info.IsSIWC {
+		if info.ApiKey == "" {
+			return errors.New("SIWC authorization requires a new sign-in")
+		}
+		if info.RelayMode != relayconstant.RelayModeResponses {
+			return errors.New("SIWC authorization only supports the Responses endpoint")
+		}
+		header.Set("Accept", "text/event-stream")
+	}
 	if info.ChannelType == constant.ChannelTypeAzure {
 		header.Set("api-key", info.ApiKey)
 		return nil
@@ -782,6 +800,8 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 	case relayconstant.RelayModeResponses:
 		if info.IsStream {
 			usage, err = OaiResponsesStreamHandler(c, info, resp)
+		} else if info.IsSIWC {
+			usage, err = OaiResponsesToChatBufferedStreamHandler(c, info, resp)
 		} else {
 			usage, err = OaiResponsesHandler(c, info, resp)
 		}

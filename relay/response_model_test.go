@@ -250,7 +250,7 @@ func TestResponseModelSharedResponsesAccumulator(t *testing.T) {
 	assert.Equal(t, "returned", info.ResponseModel.ReturnedModel)
 }
 
-func TestResponseModelDoesNotRecordSynthesizedModel(t *testing.T) {
+func TestResponseModelInterruptedStreamDoesNotInventModel(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	info := &relaycommon.RelayInfo{
@@ -260,6 +260,6 @@ func TestResponseModelDoesNotRecordSynthesizedModel(t *testing.T) {
 	_, apiErr := openai.OaiResponsesToChatBufferedStreamHandler(c, info, &http.Response{
 		StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("data: [DONE]\n\n")),
 	})
-	require.Nil(t, apiErr)
+	require.NotNil(t, apiErr)
 	assert.Nil(t, info.ResponseModel)
 }

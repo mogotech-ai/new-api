@@ -1,13 +1,72 @@
 package controller
 
 import (
+	"bytes"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSIWCChannelHasOneSessionOwner(t *testing.T) {
+	setupTaskPluginBindChannelTest(t)
+	credential := `{"client_id":"issued-client","access_token":"access","refresh_token":"refresh","expires_at":1800000000}`
+	for _, mode := range []string{"batch", "multi_to_single", "single"} {
+		body, err := common.Marshal(map[string]any{"mode": mode, "channel": map[string]any{
+			"type": 1, "name": "SIWC", "key": credential, "models": "model", "group": "default",
+		}})
+		require.NoError(t, err)
+		response := postAddChannel(t, 1, common.RoleRootUser, string(body))
+		if mode == "single" {
+			require.Contains(t, response.Body.String(), `"success":true`)
+			duplicate := postAddChannel(t, 1, common.RoleRootUser, string(body))
+			assert.Contains(t, duplicate.Body.String(), "this SIWC session is already managed by another channel")
+		} else {
+			assert.Contains(t, response.Body.String(), "SIWC credentials require single-key mode")
+		}
+	}
+	var channels []model.Channel
+	require.NoError(t, model.DB.Find(&channels).Error)
+	require.Len(t, channels, 1)
+	assert.Equal(t, credential, channels[0].Key)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprint(channels[0].Id)}}
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/channel/copy", nil)
+	CopyChannel(ctx)
+	assert.Contains(t, recorder.Body.String(), "this SIWC session is already managed by another channel")
+}
+
+func TestSIWCUpdateCannotImportIntoExistingMultiKeyChannel(t *testing.T) {
+	setupTaskPluginBindChannelTest(t)
+	channel := model.Channel{Type: 1, Name: "multi-key", Key: "key-one\nkey-two", Models: "model", Group: "default", ChannelInfo: model.ChannelInfo{IsMultiKey: true}}
+	require.NoError(t, model.DB.Create(&channel).Error)
+	for _, withType := range []bool{false, true} {
+		payload := map[string]any{"id": channel.Id, "name": channel.Name, "models": channel.Models, "group": channel.Group,
+			"key": `{"client_id":"issued-client","access_token":"access","refresh_token":"refresh","expires_at":1800000000}`}
+		if withType {
+			payload["type"] = 1
+		}
+		body, err := common.Marshal(payload)
+		require.NoError(t, err)
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Set("id", 1)
+		ctx.Set("role", common.RoleRootUser)
+		ctx.Request = httptest.NewRequest(http.MethodPut, "/api/channel", bytes.NewReader(body))
+		UpdateChannel(ctx)
+		assert.Contains(t, recorder.Body.String(), "SIWC credentials require single-key mode")
+		stored, err := model.GetChannelById(channel.Id, true)
+		require.NoError(t, err)
+		assert.Equal(t, channel.Key, stored.Key)
+	}
+}
 
 func TestAddChannelDefaultSetting(t *testing.T) {
 	for _, tc := range []struct {

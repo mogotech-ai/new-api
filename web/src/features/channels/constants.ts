@@ -560,6 +560,7 @@ export const CLAUDE_FIELD_PASSTHROUGH_TYPES = new Set([
 ])
 
 export const TYPE_TO_KEY_PROMPT: Record<number, string> = {
+  1: 'Enter an API key or SIWC OAuth JSON (client_id, access_token, refresh_token, expires_at)',
   15: 'Format: APIKey|SecretKey',
   18: 'Format: APPID|APISecret|APIKey',
   22: 'Format: APIKey-AppId, e.g., fastgpt-0sp2gtvfdgyi4k30jwlgwf1i-64f335d84283f05518e9e041',

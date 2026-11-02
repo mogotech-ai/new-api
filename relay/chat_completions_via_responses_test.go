@@ -14,6 +14,7 @@ import (
 	openaichannel "github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	relaytypes "github.com/QuantumNous/new-api/relaykit/types"
@@ -30,6 +31,7 @@ type policyTestTransport struct {
 	body     []byte
 	calls    int
 	response string
+	header   http.Header
 }
 
 func (s *policyTestTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -41,7 +43,11 @@ func (s *policyTestTransport) RoundTrip(r *http.Request) (*http.Response, error)
 		return nil, err
 	}
 	if s.response != "" {
-		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(s.response)), Request: r}, nil
+		header := s.header
+		if header == nil {
+			header = http.Header{"Content-Type": {"application/json"}}
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader(s.response)), Request: r}, nil
 	}
 	return &http.Response{StatusCode: http.StatusBadRequest, Header: make(http.Header),
 		Body: io.NopCloser(strings.NewReader(`{"error":{"message":"policy test","type":"invalid_request_error"}}`)), Request: r}, nil
@@ -166,6 +172,83 @@ func TestIsResponsesEventStreamContentType(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, isResponsesEventStreamContentType(tt.contentType))
+		})
+	}
+}
+
+func TestTextRequestViaResponsesBuffersSSE(t *testing.T) {
+	if service.GetHttpClient() == nil {
+		service.InitHttpClient()
+	}
+	client := service.GetHttpClient()
+	previousTransport := client.Transport
+	t.Cleanup(func() { client.Transport = previousTransport })
+
+	start := "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"
+	completed := "event: response.completed\ndata: " + `{"type":"response.completed","response":{"id":"resp_test","model":"gpt-6.1-terra","status":"completed","output":[],"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}}` + "\n\n"
+	failed := "event: response.failed\ndata: " + `{"type":"response.failed","response":{"status":"failed","error":{"type":"server_error","message":"upstream failed"}}}` + "\n\n"
+	jsonBody := `{"id":"resp_test","object":"response","model":"gpt-6.1-terra","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}`
+	for _, tc := range []struct {
+		name, contentType, body string
+		wantError               bool
+	}{
+		{name: "SSE header", contentType: "text/event-stream", body: start + completed},
+		{name: "missing header event first", body: start + completed},
+		{name: "missing header data first", body: strings.ReplaceAll(start+completed, "event: response.output_text.delta\n", "")},
+		{name: "missing header comment first", body: ": keepalive\n\n" + start + completed},
+		{name: "missing header JSON", body: jsonBody},
+		{name: "failed stream", body: start + failed, wantError: true},
+		{name: "interrupted stream", contentType: "text/event-stream", body: start, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			transport := &policyTestTransport{response: tc.body, header: make(http.Header)}
+			if tc.contentType != "" {
+				transport.header.Set("Content-Type", tc.contentType)
+			}
+			client.Transport = transport
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			const body = `{"model":"gemini-3.7-flash","stream":false,"messages":[{"role":"user","content":"hello"}]}`
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+			common.SetContextKey(c, constant.ContextKeyOriginalModel, "gemini-3.7-flash")
+			common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+			common.SetContextKey(c, constant.ContextKeyChannelId, 17)
+			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, "https://siwc.invalid")
+			c.Set("model_mapping", `{"gemini-3.7-flash":"gpt-6.1-terra"}`)
+			var request dto.GeneralOpenAIRequest
+			require.NoError(t, common.Unmarshal([]byte(body), &request))
+			info := relaycommon.GenRelayInfoOpenAI(c, &request)
+			info.InitChannelMeta(c)
+			info.ParamOverride = map[string]any{"stream": true, "store": false}
+			require.NoError(t, helper.ModelMappedHelper(c, info, &request))
+			adaptor := GetAdaptor(info.ApiType)
+			adaptor.Init(info)
+
+			usage, apiErr := textRequestViaResponses(c, info, adaptor, &request)
+
+			assert.False(t, info.IsStream)
+			assert.False(t, request.IsStream(c.Request))
+			assert.Equal(t, "/v1/responses", transport.path)
+			var upstream map[string]any
+			require.NoError(t, common.Unmarshal(transport.body, &upstream))
+			assert.Equal(t, "gpt-6.1-terra", upstream["model"])
+			assert.Equal(t, true, upstream["stream"])
+			assert.Equal(t, false, upstream["store"])
+			if tc.wantError {
+				require.NotNil(t, apiErr)
+				assert.Empty(t, recorder.Body.String())
+				return
+			}
+			require.Nil(t, apiErr)
+			require.NotNil(t, usage)
+			assert.Equal(t, 5, usage.TotalTokens)
+			assert.Equal(t, http.StatusOK, recorder.Code)
+			assert.Contains(t, recorder.Header().Get("Content-Type"), "application/json")
+			var response dto.OpenAITextResponse
+			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+			assert.Equal(t, "chat.completion", response.Object)
+			require.Len(t, response.Choices, 1)
+			assert.Equal(t, "ok", response.Choices[0].Message.StringContent())
 		})
 	}
 }

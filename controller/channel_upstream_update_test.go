@@ -38,6 +38,59 @@ func newAdvancedCustomModelListChannel(baseURL string, key string, upstreamPath 
 	return channel
 }
 
+func TestSIWCModelCatalogUsesOnlyAccessToken(t *testing.T) {
+	catalog := `{"models":[{"slug":"visible-model","visibility":"list"},{"slug":"hidden-model","visibility":"hidden"}]}`
+	xKey := ""
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/models", r.URL.Path)
+		assert.Equal(t, "Bearer access-only", r.Header.Get("Authorization"))
+		xKey = r.Header.Get("X-Key")
+		_, _ = w.Write([]byte(catalog))
+	}))
+	defer upstream.Close()
+	baseURL := upstream.URL
+	override := `{"X-Key":"{api_key}"}`
+	channel := &model.Channel{Type: constant.ChannelTypeOpenAI, BaseURL: &baseURL, HeaderOverride: &override,
+		Key: `{"client_id":"issued","access_token":"access-only","refresh_token":"never-forward","expires_at":1800000000}`}
+	models, err := fetchChannelUpstreamModelIDs(channel)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"visible-model"}, models)
+	assert.Equal(t, "access-only", xKey)
+	_, err = updateStandardChannelBalance(channel)
+	assert.ErrorContains(t, err, "SIWC balance is managed in ChatGPT usage settings")
+
+	// A standard model list must not be read as an empty catalog.
+	catalog = `{"object":"list","data":[{"id":"standard-model"}]}`
+	models, err = fetchChannelUpstreamModelIDs(channel)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"standard-model"}, models)
+
+	// The create form may submit pretty-printed JSON, which must not be cut to its first line.
+	body, err := common.Marshal(fetchModelsRequest{Type: constant.ChannelTypeOpenAI, BaseURL: &baseURL,
+		Key: "{\n  \"client_id\": \"issued\",\n  \"access_token\": \"access-only\",\n  \"refresh_token\": \"never-forward\",\n  \"expires_at\": 1800000000\n}"})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/channel/fetch_models", bytes.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	FetchModels(ctx)
+	var response struct {
+		Success bool     `json:"success"`
+		Message string   `json:"message"`
+		Data    []string `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.True(t, response.Success, response.Message)
+	assert.Equal(t, []string{"standard-model"}, response.Data)
+
+	// A malformed or empty catalog must fail instead of reading as "every model removed".
+	for _, malformed := range []string{`{"models":"invalid catalog"}`, `{"models":[]}`, `{"object":"list"}`} {
+		catalog = malformed
+		_, err = fetchChannelUpstreamModelIDs(channel)
+		assert.Error(t, err, malformed)
+	}
+}
+
 func TestParseOpenAIModelIDsStrictResponseContract(t *testing.T) {
 	tests := []struct {
 		name      string
