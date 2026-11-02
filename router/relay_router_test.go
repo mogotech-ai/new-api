@@ -91,6 +91,9 @@ func testSIWCNonStreamingChatAndCredentialRotation(t *testing.T, channelID int) 
 		assert.Equal(t, "gpt-6.1-terra", body["model"])
 		assert.Equal(t, true, body["stream"])
 		assert.Equal(t, false, body["store"])
+		if input, ok := body["input"]; ok {
+			assert.IsType(t, []any{}, input, "SIWC requires list input")
+		}
 		// Suppress net/http's automatic content-type sniffing to reproduce the upstream.
 		w.Header()["Content-Type"] = nil
 		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"local test passed\"}\n\n"+
