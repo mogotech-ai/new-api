@@ -460,16 +460,16 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 				Visibility string `json:"visibility"`
 			} `json:"models"`
 		}
-		if err := common.Unmarshal(body, &catalog); err != nil {
-			return nil, errors.New("invalid SIWC model catalog")
-		}
-		ids := make([]string, 0, len(catalog.Models))
-		for _, item := range catalog.Models {
-			if item.Visibility == "list" && item.Slug != "" {
-				ids = append(ids, item.Slug)
+		// Only the catalog shape returns here; a standard {"data":[...]} list falls through instead of reading as empty.
+		if common.Unmarshal(body, &catalog) == nil && len(catalog.Models) > 0 {
+			ids := make([]string, 0, len(catalog.Models))
+			for _, item := range catalog.Models {
+				if item.Visibility == "list" && item.Slug != "" {
+					ids = append(ids, item.Slug)
+				}
 			}
+			return normalizeModelNames(ids), nil
 		}
-		return normalizeModelNames(ids), nil
 	}
 	var result OpenAIModelsResponse
 	if err := common.Unmarshal(body, &result); err != nil {

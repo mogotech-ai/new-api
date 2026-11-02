@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -194,9 +195,50 @@ func TestSIWCCredentialRefreshFailureRecovery(t *testing.T) {
 				assert.Empty(t, key.AccessToken)
 				assert.Empty(t, key.RefreshToken)
 				assert.Equal(t, "issued-42", key.ClientID)
+				assert.Equal(t, common.ChannelStatusAutoDisabled, stored.Status)
 			} else {
 				assert.Equal(t, channel.Key, stored.Key)
+				assert.Equal(t, common.ChannelStatusEnabled, stored.Status)
 			}
+		})
+	}
+}
+
+func TestSIWCRefreshKeepsRotatedTokensWithUnexpectedExpiry(t *testing.T) {
+	claims := base64.RawURLEncoding.EncodeToString([]byte(`{"exp":1900000000}`))
+	now := time.Now().Unix()
+	for _, tc := range []struct {
+		name      string
+		access    string
+		expiresIn int64 // 0 omits expires_in from the token response
+		minExpiry int64
+		maxExpiry int64
+	}{
+		{"ten-day lifetime", "new-access", 864000, now + 864000, now + 864000 + 60},
+		{"oversized lifetime is capped", "new-access", math.MaxInt64, now + siwcMaxExpiresIn, now + siwcMaxExpiresIn + 60},
+		{"missing expires_in uses exp claim", "header." + claims + ".signature", 0, 1900000000, 1900000000},
+		{"no expiry refreshes next tick", "new-access", 0, now, now + 60},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := setupSIWCCredentialTest(t)
+			createSIWCTestChannel(t, 42)
+			response := map[string]any{"access_token": tc.access, "refresh_token": "new-refresh"}
+			if tc.expiresIn != 0 {
+				response["expires_in"] = tc.expiresIn
+			}
+			body, err := common.Marshal(response)
+			require.NoError(t, err)
+			client.Transport = siwcCredentialTransport(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(body)), Header: make(http.Header)}, nil
+			})
+			require.NoError(t, RefreshSIWCChannelCredential(context.Background(), 42))
+			stored, err := model.GetChannelById(42, true)
+			require.NoError(t, err)
+			key, err := common.ParseSIWCCredential(stored.Key)
+			require.NoError(t, err)
+			assert.Equal(t, "new-refresh", key.RefreshToken)
+			assert.GreaterOrEqual(t, key.ExpiresAt, tc.minExpiry)
+			assert.LessOrEqual(t, key.ExpiresAt, tc.maxExpiry)
 		})
 	}
 }

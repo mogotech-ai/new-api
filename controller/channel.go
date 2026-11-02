@@ -1529,7 +1529,8 @@ func FetchModels(c *gin.Context) {
 		}
 
 		key := strings.TrimSpace(req.Key)
-		if req.Type != constant.ChannelTypeCodex {
+		// Codex and SIWC keys are JSON that may span lines; only plain key lists use the first line.
+		if req.Type != constant.ChannelTypeCodex && !(req.Type == constant.ChannelTypeOpenAI && common.IsSIWCCredential(key)) {
 			key = strings.Split(key, "\n")[0]
 		}
 		channel = &model.Channel{

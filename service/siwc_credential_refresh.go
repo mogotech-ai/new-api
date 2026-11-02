@@ -15,12 +15,23 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/tidwall/sjson"
 )
 
-const siwcTokenURL = "https://auth.openai.com/api/accounts/oauth/token"
+const (
+	siwcTokenURL     = "https://auth.openai.com/api/accounts/oauth/token"
+	siwcMaxExpiresIn = 30 * 24 * 60 * 60
+)
 
 var siwcRefreshOnce sync.Once
+
+// Non-master nodes only see a rotated key after SYNC_FREQUENCY, so refresh at least two sync periods early.
+func siwcRefreshDue(key *common.SIWCCredential) bool {
+	now := time.Now()
+	lead := max(5*time.Minute, 2*time.Duration(common.SyncFrequency)*time.Second)
+	return !key.ReauthRequired && key.ExpiresAt <= now.Add(lead).Unix() && key.EarliestRefreshAt <= now.Unix()
+}
 
 func StartSIWCCredentialAutoRefreshTask() {
 	siwcRefreshOnce.Do(func() {
@@ -50,7 +61,7 @@ func RefreshSIWCCredentials(ctx context.Context) {
 		}
 		for _, channel := range channels {
 			key, err := common.ParseSIWCCredential(channel.Key)
-			if err != nil || key == nil || key.ReauthRequired || key.ExpiresAt > time.Now().Add(5*time.Minute).Unix() || key.EarliestRefreshAt > time.Now().Unix() {
+			if err != nil || key == nil || !siwcRefreshDue(key) {
 				continue
 			}
 			if err := RefreshSIWCChannelCredential(ctx, channel.Id); err != nil {
@@ -94,7 +105,7 @@ func RefreshSIWCChannelCredential(ctx context.Context, channelID int) error {
 	if key.SessionKey() != initial.SessionKey() {
 		return nil
 	}
-	if key.ReauthRequired || key.ExpiresAt > time.Now().Add(5*time.Minute).Unix() || key.EarliestRefreshAt > time.Now().Unix() {
+	if !siwcRefreshDue(key) {
 		return nil
 	}
 	if err := ValidateSIWCChannelSession(channel); err != nil {
@@ -150,11 +161,17 @@ func RefreshSIWCChannelCredential(ctx context.Context, channelID int) error {
 			return fmt.Errorf("SIWC refresh failed: HTTP %d", response.StatusCode)
 		}
 	} else {
-		if strings.TrimSpace(replacement.AccessToken) == "" || strings.TrimSpace(replacement.RefreshToken) == "" || replacement.ExpiresIn <= 0 || replacement.ExpiresIn > 86400 || replacement.EarliestRefreshAt < 0 {
+		if strings.TrimSpace(replacement.AccessToken) == "" || strings.TrimSpace(replacement.RefreshToken) == "" {
 			return errors.New("SIWC token response is missing required fields")
 		}
+		// The old refresh token is already spent, so an unexpected expiry must not discard the new pair.
+		// 0 lets ParseSIWCCredential fall back to the access token's exp claim; long lifetimes are capped.
+		expiresAt := int64(0)
+		if replacement.ExpiresIn > 0 {
+			expiresAt = time.Now().Unix() + min(replacement.ExpiresIn, siwcMaxExpiresIn)
+		}
 		updates = map[string]any{"access_token": replacement.AccessToken, "refresh_token": replacement.RefreshToken,
-			"expires_at": time.Now().Unix() + replacement.ExpiresIn, "earliest_refresh_at": replacement.EarliestRefreshAt}
+			"expires_at": expiresAt, "earliest_refresh_at": max(replacement.EarliestRefreshAt, 0)}
 		if replacement.IDToken != "" {
 			updates["id_token"] = replacement.IDToken
 		}
@@ -172,6 +189,12 @@ func RefreshSIWCChannelCredential(ctx context.Context, channelID int) error {
 			return errors.New("cannot encode SIWC credential replacement")
 		}
 	}
+	if stored, _ := common.ParseSIWCCredential(string(updated)); stored == nil {
+		// Neither expires_in nor an exp claim: refresh on the next tick instead of storing an unusable key.
+		if updated, err = sjson.SetBytes(updated, "expires_at", time.Now().Unix()); err != nil {
+			return errors.New("cannot encode SIWC credential replacement")
+		}
+	}
 	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer persistCancel()
 	if err := model.SaveChannelCredentialWithLease(persistCtx, channelID, channel.Key, string(updated), lease, owner); err != nil {
@@ -183,6 +206,10 @@ func RefreshSIWCChannelCredential(ctx context.Context, channelID int) error {
 		return errors.New("SIWC credentials were saved but channel cache reload failed")
 	}
 	model.CacheUpdateChannel(channel)
+	if response.StatusCode != http.StatusOK {
+		// Without a token every request fails before reaching upstream; stop routing until an administrator re-imports it.
+		DisableChannel(*types.NewChannelError(channel.Id, channel.Type, channel.Name, false, "", channel.GetAutoBan()), "SIWC authorization requires a new sign-in")
+	}
 	model.RecordAuditLog(nil, model.AuditLog{Username: "system", ActorRole: common.RoleRootUser, AuthMethod: "system",
 		Category: model.AuditCategorySecurity, Action: "channel.oauth_refresh", Status: response.StatusCode, Success: response.StatusCode == http.StatusOK,
 		Content: fmt.Sprintf("SIWC credential refresh for channel %d", channelID)})
