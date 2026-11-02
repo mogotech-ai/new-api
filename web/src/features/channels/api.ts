@@ -317,6 +317,38 @@ export async function setChannelBalance(
 }
 
 /**
+ * Start a ChatGPT (SIWC) sign-in and get the authorization URL to open
+ */
+export async function startSIWCLogin(): Promise<{
+  success: boolean
+  message?: string
+  data?: { authorize_url: string }
+}> {
+  const res = await api.post(
+    '/api/channel/siwc/login/start',
+    {},
+    channelActionConfig()
+  )
+  return res.data
+}
+
+/**
+ * Exchange the pasted ChatGPT callback URL for an OpenAI channel key
+ */
+export async function completeSIWCLogin(callbackUrl: string): Promise<{
+  success: boolean
+  message?: string
+  data?: { key: string }
+}> {
+  const res = await api.post(
+    '/api/channel/siwc/login/complete',
+    { callback_url: callbackUrl },
+    channelActionConfig()
+  )
+  return res.data
+}
+
+/**
  * Fetch available models from upstream provider
  */
 export async function fetchUpstreamModels(

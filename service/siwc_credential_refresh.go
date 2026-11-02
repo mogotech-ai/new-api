@@ -21,6 +21,7 @@ import (
 
 const (
 	siwcTokenURL     = "https://auth.openai.com/api/accounts/oauth/token"
+	siwcResource     = "https://api.openai.com/v1"
 	siwcMaxExpiresIn = 30 * 24 * 60 * 60
 	// Half the documented one-hour access-token lifetime, so a freshly issued token is never due again.
 	siwcMaxRefreshLead = 30 * time.Minute
@@ -117,89 +118,24 @@ func RefreshSIWCChannelCredential(ctx context.Context, channelID int) error {
 	if err := ValidateSIWCChannelSession(channel); err != nil {
 		return err
 	}
-	client, err := getCodexOAuthHTTPClient(channel.GetSetting().Proxy)
+	status, token, err := postSIWCToken(refreshCtx, channel.GetSetting().Proxy,
+		url.Values{"grant_type": {"refresh_token"}, "client_id": {key.ClientID}, "refresh_token": {key.RefreshToken}, "resource": {siwcResource}})
 	if err != nil {
-		return errors.New("SIWC refresh proxy configuration is invalid")
-	}
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	form := url.Values{"grant_type": {"refresh_token"}, "client_id": {key.ClientID}, "refresh_token": {key.RefreshToken}, "resource": {"https://api.openai.com/v1"}}
-	request, err := http.NewRequestWithContext(refreshCtx, http.MethodPost, siwcTokenURL, strings.NewReader(form.Encode()))
-	if err != nil {
-		return errors.New("cannot create SIWC refresh request")
-	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response, err := client.Do(request)
-	if err != nil {
-		return errors.New("SIWC token refresh request failed")
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
-	if err != nil || len(body) > 1<<20 {
-		return errors.New("invalid SIWC token response")
-	}
-	var replacement struct {
-		AccessToken       string            `json:"access_token"`
-		RefreshToken      string            `json:"refresh_token"`
-		ExpiresIn         int64             `json:"expires_in"`
-		EarliestRefreshAt int64             `json:"earliest_refresh_at"`
-		IDToken           string            `json:"id_token"`
-		Scope             string            `json:"scope"`
-		TokenType         string            `json:"token_type"`
-		Error             common.RawMessage `json:"error"`
-	}
-	if common.Unmarshal(body, &replacement) != nil {
-		return errors.New("invalid SIWC token response")
-	}
-	updates := map[string]any{}
-	if response.StatusCode != http.StatusOK {
-		code := ""
-		if common.Unmarshal(replacement.Error, &code) != nil {
-			var oauthError struct {
-				Code string `json:"code"`
-			}
-			_ = common.Unmarshal(replacement.Error, &oauthError)
-			code = oauthError.Code
-		}
-		switch code {
-		case "invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused":
-			updates = map[string]any{"access_token": "", "refresh_token": "", "id_token": "", "reauth_required": true, "siwc_subject": key.Subject}
-		default:
-			return fmt.Errorf("SIWC refresh failed: HTTP %d", response.StatusCode)
-		}
-	} else {
-		if strings.TrimSpace(replacement.AccessToken) == "" || strings.TrimSpace(replacement.RefreshToken) == "" {
-			return errors.New("SIWC token response is missing required fields")
-		}
-		// The old refresh token is already spent, so an unexpected expiry must not discard the new pair.
-		// 0 lets ParseSIWCCredential fall back to the access token's exp claim; long lifetimes are capped.
-		expiresAt := int64(0)
-		if replacement.ExpiresIn > 0 {
-			expiresAt = time.Now().Unix() + min(replacement.ExpiresIn, siwcMaxExpiresIn)
-		}
-		updates = map[string]any{"access_token": replacement.AccessToken, "refresh_token": replacement.RefreshToken,
-			"expires_at": expiresAt, "earliest_refresh_at": max(replacement.EarliestRefreshAt, 0)}
-		if replacement.IDToken != "" {
-			updates["id_token"] = replacement.IDToken
-		}
-		if replacement.Scope != "" {
-			updates["scope"] = replacement.Scope
-		}
-		if replacement.TokenType != "" {
-			updates["token_type"] = replacement.TokenType
-		}
+		return err
 	}
 	updated := []byte(channel.Key)
-	for field, value := range updates {
-		updated, err = sjson.SetBytes(updated, field, value)
-		if err != nil {
-			return errors.New("cannot encode SIWC credential replacement")
+	if status != http.StatusOK {
+		switch token.errorCode() {
+		case "invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused":
+			updated, err = setSIWCFields(updated, map[string]any{"access_token": "", "refresh_token": "", "id_token": "", "reauth_required": true, "siwc_subject": key.Subject})
+		default:
+			return fmt.Errorf("SIWC refresh failed: HTTP %d", status)
 		}
+	} else {
+		updated, err = applySIWCTokens(updated, token)
 	}
-	if stored, _ := common.ParseSIWCCredential(string(updated)); stored == nil {
-		// Neither expires_in nor an exp claim: refresh on the next tick instead of storing an unusable key.
-		if updated, err = sjson.SetBytes(updated, "expires_at", time.Now().Unix()); err != nil {
-			return errors.New("cannot encode SIWC credential replacement")
-		}
+	if err != nil {
+		return err
 	}
 	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer persistCancel()
@@ -212,12 +148,12 @@ func RefreshSIWCChannelCredential(ctx context.Context, channelID int) error {
 		return errors.New("SIWC credentials were saved but channel cache reload failed")
 	}
 	model.CacheUpdateChannel(channel)
-	if response.StatusCode != http.StatusOK {
+	if status != http.StatusOK {
 		// Without a token every request fails before reaching upstream; stop routing until an administrator re-imports it.
 		DisableChannel(*types.NewChannelError(channel.Id, channel.Type, channel.Name, false, "", channel.GetAutoBan()), "SIWC authorization requires a new sign-in")
 	}
 	model.RecordAuditLog(nil, model.AuditLog{Username: "system", ActorRole: common.RoleRootUser, AuthMethod: "system",
-		Category: model.AuditCategorySecurity, Action: "channel.oauth_refresh", Status: response.StatusCode, Success: response.StatusCode == http.StatusOK,
+		Category: model.AuditCategorySecurity, Action: "channel.oauth_refresh", Status: status, Success: status == http.StatusOK,
 		Content: fmt.Sprintf("SIWC credential refresh for channel %d", channelID)})
 	return nil
 }
@@ -243,4 +179,99 @@ func ValidateSIWCChannelSession(channel *model.Channel) error {
 		}
 	}
 	return nil
+}
+
+type siwcTokenResponse struct {
+	AccessToken       string            `json:"access_token"`
+	RefreshToken      string            `json:"refresh_token"`
+	ExpiresIn         int64             `json:"expires_in"`
+	EarliestRefreshAt int64             `json:"earliest_refresh_at"`
+	IDToken           string            `json:"id_token"`
+	Scope             string            `json:"scope"`
+	TokenType         string            `json:"token_type"`
+	Error             common.RawMessage `json:"error"`
+}
+
+// errorCode reads both the RFC 6749 string form and OpenAI's {"code": ...} object form.
+func (token *siwcTokenResponse) errorCode() string {
+	code := ""
+	if common.Unmarshal(token.Error, &code) == nil {
+		return code
+	}
+	var oauthError struct {
+		Code string `json:"code"`
+	}
+	_ = common.Unmarshal(token.Error, &oauthError)
+	return oauthError.Code
+}
+
+// postSIWCToken sends one form-encoded grant to the SIWC token endpoint and decodes the reply.
+func postSIWCToken(ctx context.Context, proxy string, form url.Values) (int, *siwcTokenResponse, error) {
+	client, err := getCodexOAuthHTTPClient(proxy)
+	if err != nil {
+		return 0, nil, errors.New("SIWC proxy configuration is invalid")
+	}
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, siwcTokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return 0, nil, errors.New("cannot create SIWC token request")
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response, err := client.Do(request)
+	if err != nil {
+		return 0, nil, errors.New("SIWC token request failed")
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
+	if err != nil || len(body) > 1<<20 {
+		return 0, nil, errors.New("invalid SIWC token response")
+	}
+	var token siwcTokenResponse
+	if common.Unmarshal(body, &token) != nil {
+		return 0, nil, errors.New("invalid SIWC token response")
+	}
+	return response.StatusCode, &token, nil
+}
+
+// applySIWCTokens writes a successful token response into a credential JSON object.
+// A refresh has already spent the old refresh token, so an unexpected expiry must not discard the new pair.
+func applySIWCTokens(credential []byte, token *siwcTokenResponse) ([]byte, error) {
+	if strings.TrimSpace(token.AccessToken) == "" || strings.TrimSpace(token.RefreshToken) == "" {
+		return nil, errors.New("SIWC token response is missing required fields")
+	}
+	// 0 lets ParseSIWCCredential fall back to the access token's exp claim; long lifetimes are capped.
+	expiresAt := int64(0)
+	if token.ExpiresIn > 0 {
+		expiresAt = time.Now().Unix() + min(token.ExpiresIn, siwcMaxExpiresIn)
+	}
+	fields := map[string]any{"access_token": token.AccessToken, "refresh_token": token.RefreshToken,
+		"expires_at": expiresAt, "earliest_refresh_at": max(token.EarliestRefreshAt, 0)}
+	if token.IDToken != "" {
+		fields["id_token"] = token.IDToken
+	}
+	if token.Scope != "" {
+		fields["scope"] = token.Scope
+	}
+	if token.TokenType != "" {
+		fields["token_type"] = token.TokenType
+	}
+	credential, err := setSIWCFields(credential, fields)
+	if err != nil {
+		return nil, err
+	}
+	if stored, _ := common.ParseSIWCCredential(string(credential)); stored == nil {
+		// Neither expires_in nor an exp claim: refresh on the next tick instead of storing an unusable key.
+		return setSIWCFields(credential, map[string]any{"expires_at": time.Now().Unix()})
+	}
+	return credential, nil
+}
+
+func setSIWCFields(credential []byte, fields map[string]any) ([]byte, error) {
+	var err error
+	for field, value := range fields {
+		if credential, err = sjson.SetBytes(credential, field, value); err != nil {
+			return nil, errors.New("cannot encode SIWC credential")
+		}
+	}
+	return credential, nil
 }

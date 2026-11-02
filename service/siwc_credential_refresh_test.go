@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -75,7 +77,7 @@ func setupSIWCCredentialTest(t *testing.T) *http.Client {
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.SystemTaskLock{}, &model.AuditLog{}))
+	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.SystemTaskLock{}, &model.AuditLog{}, &model.AuthFlow{}))
 	previousDB, previousLog, previousCache := model.DB, model.LOG_DB, common.MemoryCacheEnabled
 	previousMainType, previousLogType := common.MainDatabaseType(), common.LogDatabaseType()
 	model.DB, model.LOG_DB, common.MemoryCacheEnabled = db, db, true
@@ -281,4 +283,67 @@ func TestSIWCDuplicateSessionCannotRotateTwoChannelCopies(t *testing.T) {
 	require.NoError(t, model.DB.Create(&second).Error)
 	require.ErrorContains(t, ValidateSIWCChannelSession(&second), "already managed")
 	require.ErrorContains(t, RefreshSIWCChannelCredential(context.Background(), 17), "already managed")
+}
+
+func TestSIWCLoginExchangesCodeOnceForTheStartingAdmin(t *testing.T) {
+	client := setupSIWCCredentialTest(t)
+	start := func(userID int) url.Values {
+		authorizeURL, err := StartSIWCLogin(userID)
+		require.NoError(t, err)
+		parsed, err := url.Parse(authorizeURL)
+		require.NoError(t, err)
+		query := parsed.Query()
+		assert.Equal(t, "dynamic_agent_client", query.Get("client_id"))
+		assert.Equal(t, "S256", query.Get("code_challenge_method"))
+		assert.Equal(t, siwcRedirectURI, query.Get("redirect_uri"))
+		assert.Equal(t, siwcResource, query.Get("resource"))
+		assert.Contains(t, strings.Fields(query.Get("scope")), "chatgpt.tokens.use.direct")
+		return query
+	}
+	callback := func(authorize url.Values, extra string) string {
+		return siwcRedirectURI + "?state=" + url.QueryEscape(authorize.Get("state")) + extra
+	}
+	var exchanges atomic.Int32
+	scope := "openid offline_access chatgpt.tokens.use.direct"
+	var authorize url.Values
+	client.Transport = siwcCredentialTransport(func(request *http.Request) (*http.Response, error) {
+		exchanges.Add(1)
+		require.NoError(t, request.ParseForm())
+		assert.Equal(t, "authorization_code", request.Form.Get("grant_type"))
+		assert.Equal(t, "oaiapp_issued", request.Form.Get("client_id"))
+		assert.Equal(t, siwcRedirectURI, request.Form.Get("redirect_uri"))
+		challenge := sha256.Sum256([]byte(request.Form.Get("code_verifier")))
+		assert.Equal(t, authorize.Get("code_challenge"), base64.RawURLEncoding.EncodeToString(challenge[:]))
+		body, err := common.Marshal(map[string]any{"access_token": "login-access", "refresh_token": "login-refresh", "expires_in": 3600, "scope": scope})
+		require.NoError(t, err)
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(body)), Header: make(http.Header)}, nil
+	})
+
+	authorize = start(1)
+	_, err := CompleteSIWCLogin(context.Background(), 2, callback(authorize, "&code=c&client_id=oaiapp_issued"))
+	require.ErrorContains(t, err, "start again", "another administrator must not complete this flow")
+	key, err := CompleteSIWCLogin(context.Background(), 1, callback(authorize, "&code=c&client_id=oaiapp_issued"))
+	require.NoError(t, err)
+	credential, err := common.ParseSIWCCredential(key)
+	require.NoError(t, err)
+	require.NotNil(t, credential)
+	assert.Equal(t, "oaiapp_issued", credential.ClientID)
+	assert.Equal(t, "login-refresh", credential.RefreshToken)
+	assert.Contains(t, key, `"ext_agent_host_id":"`+authorize.Get("ext_agent_host_id")+`"`)
+	_, err = CompleteSIWCLogin(context.Background(), 1, callback(authorize, "&code=c&client_id=oaiapp_issued"))
+	require.ErrorContains(t, err, "start again", "a used state must not be replayed")
+	assert.EqualValues(t, 1, exchanges.Load())
+
+	authorize = start(1)
+	_, err = CompleteSIWCLogin(context.Background(), 1, callback(authorize, "&error=access_denied"))
+	require.ErrorContains(t, err, "not granted")
+	authorize = start(1)
+	_, err = CompleteSIWCLogin(context.Background(), 1, callback(authorize, "&code=c&client_id=dynamic_agent_client"))
+	require.ErrorContains(t, err, "issued client_id")
+	assert.EqualValues(t, 1, exchanges.Load())
+
+	scope = "openid offline_access"
+	authorize = start(1)
+	_, err = CompleteSIWCLogin(context.Background(), 1, callback(authorize, "&code=c&client_id=oaiapp_issued"))
+	require.ErrorContains(t, err, "ChatGPT plan usage")
 }

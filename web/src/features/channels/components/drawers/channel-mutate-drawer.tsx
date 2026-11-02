@@ -29,6 +29,7 @@ import {
   Loader2,
   Server,
   Sparkles,
+  KeyRound,
   Trash2,
   Copy,
   FileText,
@@ -221,6 +222,7 @@ import {
   PassthroughWarningDialog,
   type PassthroughKind,
 } from '../dialogs/passthrough-warning-dialog'
+import { SIWCLoginDialog } from '../dialogs/siwc-login-dialog'
 import { StatusCodeRiskDialog } from '../dialogs/status-code-risk-dialog'
 import {
   ModelMappingBatchDialog,
@@ -456,6 +458,7 @@ export function ChannelMutateDrawer({
     pluginKey?: string
   } | null>(null)
   const [paramOverrideEditorOpen, setParamOverrideEditorOpen] = useState(false)
+  const [siwcLoginOpen, setSIWCLoginOpen] = useState(false)
   const [advancedCustomEditorOpen, setAdvancedCustomEditorOpen] =
     useState(false)
   const [clipboardConnectionInfo, setClipboardConnectionInfo] =
@@ -4459,6 +4462,19 @@ export function ChannelMutateDrawer({
                               {t('Remove Duplicates')}
                             </Button>
                           )}
+                          {currentType === 1 && !isBatchMode && (
+                            <Button
+                              type='button'
+                              variant='outline'
+                              size='sm'
+                              onClick={() => setSIWCLoginOpen(true)}
+                              disabled={sensitiveLocked}
+                              className='w-fit'
+                            >
+                              <KeyRound className='mr-2 h-4 w-4' />
+                              {t('Sign in with ChatGPT')}
+                            </Button>
+                          )}
                         </span>
                       </FormDescription>
                       {isEditing && canRevealChannelKey && (
@@ -5145,6 +5161,13 @@ export function ChannelMutateDrawer({
         onOpenChange={setMissingModelsDialogOpen}
       />
 
+      <SIWCLoginDialog
+        open={siwcLoginOpen}
+        onOpenChange={setSIWCLoginOpen}
+        onCredential={(key) =>
+          form.setValue('key', key, { shouldDirty: true, shouldValidate: true })
+        }
+      />
       <StatusCodeRiskDialog
         open={statusCodeRiskOpen}
         onOpenChange={(v) => {
