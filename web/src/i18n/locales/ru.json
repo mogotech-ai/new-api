@@ -7373,6 +7373,14 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Enter an API key or SIWC OAuth JSON (client_id, access_token, refresh_token, expires_at)": "Введите API-ключ или JSON OAuth SIWC (client_id, access_token, refresh_token, expires_at)",
+    "invalid SIWC credential JSON": "Недопустимый JSON учётных данных SIWC",
+    "SIWC credentials require client_id, access_token and refresh_token": "Учётные данные SIWC должны содержать client_id, access_token и refresh_token",
+    "SIWC credentials require the client_id issued for this registration": "Используйте client_id, выданный для этой регистрации SIWC",
+    "SIWC credentials require a valid expires_at or access-token expiry": "Требуется корректный срок действия учётных данных SIWC",
+    "SIWC credentials require single-key mode": "Для SIWC необходим режим одного ключа",
+    "this SIWC session is already managed by another channel": "Этот сеанс SIWC уже управляется другим каналом",
+    "SIWC balance is managed in ChatGPT usage settings": "Управляйте квотой SIWC в настройках использования ChatGPT"
   }
 }

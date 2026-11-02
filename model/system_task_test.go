@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"os"
 	"testing"
 
@@ -14,6 +15,76 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
 )
+
+func TestOAuthCredentialLeaseDatabaseMatrix(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			var driver gorm.Dialector
+			switch dialect {
+			case "sqlite":
+				driver = sqlite.Open(":memory:")
+			case "mysql":
+				dsn := os.Getenv("TEST_MYSQL_DSN")
+				if dsn == "" {
+					t.Skip("TEST_MYSQL_DSN is not configured")
+				}
+				driver = mysql.Open(dsn)
+			case "postgres":
+				dsn := os.Getenv("TEST_POSTGRES_DSN")
+				if dsn == "" {
+					t.Skip("TEST_POSTGRES_DSN is not configured")
+				}
+				driver = postgres.Open(dsn)
+			}
+			db, err := gorm.Open(driver, &gorm.Config{NamingStrategy: schema.NamingStrategy{TablePrefix: "siwc_lease_"}})
+			require.NoError(t, err)
+			sqlDB, err := db.DB()
+			require.NoError(t, err)
+			sqlDB.SetMaxOpenConns(1)
+			previousDB := DB
+			DB = db
+			t.Cleanup(func() {
+				DB = previousDB
+				require.NoError(t, db.Migrator().DropTable(&Channel{}, &SystemTaskLock{}))
+				require.NoError(t, sqlDB.Close())
+			})
+			require.NoError(t, db.AutoMigrate(&Channel{}, &SystemTaskLock{}))
+			versionQuery := "SELECT version()"
+			if dialect == "sqlite" {
+				versionQuery = "SELECT sqlite_version()"
+			}
+			var version string
+			require.NoError(t, db.Raw(versionQuery).Scan(&version).Error)
+			t.Logf("database version: %s", version)
+			channel := &Channel{Id: 42, Type: 1, Key: "old-key", Name: "preserved name", Models: "model-one", Group: "default"}
+			require.NoError(t, db.Create(channel).Error)
+			lease, acquired, err := AcquireOAuthCredentialLease("session-one", "first-owner", common.GetTimestamp()+60)
+			require.NoError(t, err)
+			require.True(t, acquired)
+			_, acquired, err = AcquireOAuthCredentialLease("session-one", "second-owner", common.GetTimestamp()+60)
+			require.NoError(t, err)
+			assert.False(t, acquired)
+			_, independent, err := AcquireOAuthCredentialLease("session-two", "second-owner", common.GetTimestamp()+60)
+			require.NoError(t, err)
+			assert.True(t, independent)
+			require.ErrorIs(t, SaveChannelCredentialWithLease(context.Background(), 42, "old-key", "wrong-owner", lease, "second-owner"), ErrSystemTaskLockLost)
+			require.NoError(t, SaveChannelCredentialWithLease(context.Background(), 42, "old-key", "new-key", lease, "first-owner"))
+			require.ErrorIs(t, SaveChannelCredentialWithLease(context.Background(), 42, "old-key", "stale-key", lease, "first-owner"), ErrSystemTaskLockLost)
+			require.NoError(t, db.Model(&SystemTaskLock{}).Where("task_id = ?", lease).Update("locked_until", common.GetTimestamp()-1).Error)
+			_, acquired, err = AcquireOAuthCredentialLease("session-one", "second-owner", common.GetTimestamp()+60)
+			require.NoError(t, err)
+			require.True(t, acquired)
+			require.ErrorIs(t, SaveChannelCredentialWithLease(context.Background(), 42, "new-key", "expired-owner", lease, "first-owner"), ErrSystemTaskLockLost)
+			require.NoError(t, ReleaseSystemTaskLock(lease, "first-owner"))
+			require.NoError(t, SaveChannelCredentialWithLease(context.Background(), 42, "new-key", "latest-key", lease, "second-owner"))
+			var stored Channel
+			require.NoError(t, db.First(&stored, 42).Error)
+			assert.Equal(t, "latest-key", stored.Key)
+			assert.Equal(t, "preserved name", stored.Name)
+			assert.Equal(t, "model-one", stored.Models)
+		})
+	}
+}
 
 func TestSystemTaskHistoryDatabaseMatrix(t *testing.T) {
 	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {

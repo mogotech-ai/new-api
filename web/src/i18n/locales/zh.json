@@ -7373,6 +7373,14 @@
     "Zhipu": "智谱",
     "Zhipu GLM": "智谱GLM",
     "Zhipu V4": "智谱 V4",
-    "Zoom": "缩放"
+    "Zoom": "缩放",
+    "Enter an API key or SIWC OAuth JSON (client_id, access_token, refresh_token, expires_at)": "输入 API Key 或 SIWC OAuth JSON（client_id、access_token、refresh_token、expires_at）",
+    "invalid SIWC credential JSON": "SIWC 凭据 JSON 无效",
+    "SIWC credentials require client_id, access_token and refresh_token": "SIWC 凭据必须包含 client_id、access_token 和 refresh_token",
+    "SIWC credentials require the client_id issued for this registration": "SIWC 凭据必须使用本次注册实际签发的 client_id",
+    "SIWC credentials require a valid expires_at or access-token expiry": "SIWC 凭据必须包含有效的 expires_at 或访问令牌到期时间",
+    "SIWC credentials require single-key mode": "SIWC 凭据必须使用单密钥模式",
+    "this SIWC session is already managed by another channel": "此 SIWC 会话已由另一个渠道管理",
+    "SIWC balance is managed in ChatGPT usage settings": "请在 ChatGPT 用量设置中管理 SIWC 额度"
   }
 }

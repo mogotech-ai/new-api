@@ -56,6 +56,7 @@ type ResponsesUsageInfo struct {
 }
 
 type ChannelMeta struct {
+	IsSIWC               bool
 	ChannelType          int
 	ChannelId            int
 	ChannelIsMultiKey    bool
@@ -299,6 +300,12 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 		UpstreamModelName:    common.GetContextKeyString(c, constant.ContextKeyOriginalModel),
 		IsModelMapped:        false,
 		SupportStreamOptions: false,
+	}
+	if channelType == constant.ChannelTypeOpenAI {
+		if credential, err := common.ParseSIWCCredential(channelMeta.ApiKey); err == nil && credential != nil {
+			channelMeta.IsSIWC = true
+			channelMeta.ApiKey = credential.AccessToken
+		}
 	}
 
 	if channelType == constant.ChannelTypeAzure {

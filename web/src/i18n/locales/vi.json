@@ -7373,6 +7373,14 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Enter an API key or SIWC OAuth JSON (client_id, access_token, refresh_token, expires_at)": "Nhập khóa API hoặc JSON OAuth SIWC (client_id, access_token, refresh_token, expires_at)",
+    "invalid SIWC credential JSON": "JSON thông tin xác thực SIWC không hợp lệ",
+    "SIWC credentials require client_id, access_token and refresh_token": "Thông tin xác thực SIWC phải có client_id, access_token và refresh_token",
+    "SIWC credentials require the client_id issued for this registration": "Hãy dùng client_id được cấp cho lần đăng ký SIWC này",
+    "SIWC credentials require a valid expires_at or access-token expiry": "Thông tin xác thực SIWC phải có thời hạn hợp lệ",
+    "SIWC credentials require single-key mode": "Thông tin xác thực SIWC yêu cầu chế độ một khóa",
+    "this SIWC session is already managed by another channel": "Phiên SIWC này đã được quản lý bởi kênh khác",
+    "SIWC balance is managed in ChatGPT usage settings": "Quản lý hạn mức SIWC trong phần cài đặt sử dụng ChatGPT"
   }
 }

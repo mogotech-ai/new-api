@@ -458,7 +458,7 @@ func BatchInsertChannels(channels []Channel) error {
 	if len(channels) == 0 {
 		return nil
 	}
-	tx := DB.Begin()
+	tx := channelCredentialDB(channels...).Begin()
 	if tx.Error != nil {
 		return tx.Error
 	}
@@ -552,7 +552,7 @@ func (channel *Channel) GetStatusCodeMapping() string {
 
 func (channel *Channel) Insert() error {
 	var err error
-	err = DB.Create(channel).Error
+	err = channelCredentialDB(*channel).Create(channel).Error
 	if err != nil {
 		return err
 	}
@@ -600,7 +600,7 @@ func (channel *Channel) Update() error {
 		}
 	}
 	var err error
-	err = DB.Model(channel).Updates(channel).Error
+	err = channelCredentialDB(*channel).Model(channel).Updates(channel).Error
 	if err != nil {
 		return err
 	}

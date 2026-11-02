@@ -364,6 +364,50 @@ export const channelFormSchema = z
       )
     }
 
+    if (data.type === 1 && data.key?.trim().startsWith('{')) {
+      try {
+        const credential = JSON.parse(data.key) as Record<string, unknown>
+        if (
+          ['client_id', 'access_token', 'refresh_token'].some(
+            (key) => key in credential
+          )
+        ) {
+          if (
+            !['client_id', 'access_token', 'refresh_token'].every(
+              (key) =>
+                typeof credential[key] === 'string' &&
+                String(credential[key]).trim()
+            )
+          ) {
+            addRequiredIssue(
+              ctx,
+              'key',
+              'SIWC credentials require client_id, access_token and refresh_token'
+            )
+          }
+          if (
+            credential.client_id === 'dynamic_agent_client' ||
+            credential.client_id === 'app_EMoamEEZ73f0CkXaXp7hrann'
+          ) {
+            addRequiredIssue(
+              ctx,
+              'key',
+              'SIWC credentials require the client_id issued for this registration'
+            )
+          }
+          if (data.multi_key_mode && data.multi_key_mode !== 'single') {
+            addRequiredIssue(
+              ctx,
+              'multi_key_mode',
+              'SIWC credentials require single-key mode'
+            )
+          }
+        }
+      } catch {
+        addRequiredIssue(ctx, 'key', 'invalid SIWC credential JSON')
+      }
+    }
+
     if (data.type === 57) {
       if (data.multi_key_mode && data.multi_key_mode !== 'single') {
         addRequiredIssue(

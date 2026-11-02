@@ -38,6 +38,25 @@ func newAdvancedCustomModelListChannel(baseURL string, key string, upstreamPath 
 	return channel
 }
 
+func TestSIWCModelCatalogUsesOnlyAccessToken(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/models", r.URL.Path)
+		assert.Equal(t, "Bearer access-only", r.Header.Get("Authorization"))
+		assert.Equal(t, "access-only", r.Header.Get("X-Key"))
+		_, _ = w.Write([]byte(`{"models":[{"slug":"visible-model","visibility":"list"},{"slug":"hidden-model","visibility":"hidden"}]}`))
+	}))
+	defer upstream.Close()
+	baseURL := upstream.URL
+	override := `{"X-Key":"{api_key}"}`
+	channel := &model.Channel{Type: constant.ChannelTypeOpenAI, BaseURL: &baseURL, HeaderOverride: &override,
+		Key: `{"client_id":"issued","access_token":"access-only","refresh_token":"never-forward","expires_at":1800000000}`}
+	models, err := fetchChannelUpstreamModelIDs(channel)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"visible-model"}, models)
+	_, err = updateStandardChannelBalance(channel)
+	assert.ErrorContains(t, err, "SIWC balance is managed in ChatGPT usage settings")
+}
+
 func TestParseOpenAIModelIDsStrictResponseContract(t *testing.T) {
 	tests := []struct {
 		name      string

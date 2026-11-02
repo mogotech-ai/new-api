@@ -285,6 +285,15 @@ func GetAllChannels(c *gin.Context) {
 }
 
 func buildFetchModelsHeaders(channel *model.Channel, key string) (http.Header, error) {
+	if channel.Type == constant.ChannelTypeOpenAI {
+		credential, err := common.ParseSIWCCredential(key)
+		if err != nil {
+			return nil, err
+		}
+		if credential != nil {
+			key = credential.AccessToken
+		}
+	}
 	var headers http.Header
 	switch channel.Type {
 	case constant.ChannelTypeAnthropic:
@@ -529,6 +538,20 @@ const maxTaskExtendPluginKeys = 32
 func validateChannel(channel *model.Channel, isAdd bool) error {
 	if channel == nil {
 		return fmt.Errorf("channel cannot be empty")
+	}
+	if channel.Type == constant.ChannelTypeOpenAI {
+		credential, err := common.ParseSIWCCredential(channel.Key)
+		if err != nil {
+			return err
+		}
+		if credential != nil && channel.ChannelInfo.IsMultiKey {
+			return errors.New("SIWC credentials require single-key mode")
+		}
+		if credential != nil {
+			if err := service.ValidateSIWCChannelSession(channel); err != nil {
+				return err
+			}
+		}
 	}
 
 	// 校验 channel settings
@@ -787,6 +810,10 @@ func AddChannel(c *gin.Context) {
 
 	addChannelRequest.Channel.CreatedTime = common.GetTimestamp()
 	keys := make([]string, 0)
+	if addChannelRequest.Channel.Type == constant.ChannelTypeOpenAI && common.IsSIWCCredential(addChannelRequest.Channel.Key) && addChannelRequest.Mode != "single" {
+		common.ApiError(c, errors.New("SIWC credentials require single-key mode"))
+		return
+	}
 	switch addChannelRequest.Mode {
 	case "multi_to_single":
 		addChannelRequest.Channel.ChannelInfo.IsMultiKey = true
@@ -1159,6 +1186,29 @@ func UpdateChannel(c *gin.Context) {
 
 	// Always copy the original ChannelInfo so that fields like IsMultiKey and MultiKeySize are retained.
 	channel.ChannelInfo = originChannel.ChannelInfo
+	effectiveType := channel.Type
+	if effectiveType == 0 {
+		effectiveType = originChannel.Type
+	}
+	if effectiveType == constant.ChannelTypeOpenAI {
+		credential, err := common.ParseSIWCCredential(channel.Key)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if credential != nil {
+			if channel.ChannelInfo.IsMultiKey {
+				common.ApiError(c, errors.New("SIWC credentials require single-key mode"))
+				return
+			}
+			candidate := channel.Channel
+			candidate.Type = effectiveType
+			if err := service.ValidateSIWCChannelSession(&candidate); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+		}
+	}
 
 	if channelHasSensitiveChanges(&channel, originChannel, requestData) &&
 		!authz.Can(c.GetInt("id"), c.GetInt("role"), authz.ChannelSensitiveWrite) {
@@ -1589,6 +1639,10 @@ func CopyChannel(c *gin.Context) {
 	if err != nil {
 		common.SysError(common.LogText("failed to get channel by id: %s", err.Error()))
 		common.ApiErrorT(c, "Failed to fetch channel. Please try again later")
+		return
+	}
+	if origin.Type == constant.ChannelTypeOpenAI && common.IsSIWCCredential(origin.Key) {
+		common.ApiError(c, errors.New("this SIWC session is already managed by another channel"))
 		return
 	}
 	if (origin.Type == constant.ChannelTypeTaskPlugin || len(origin.GetSetting().TaskPluginBindings()) > 0) &&

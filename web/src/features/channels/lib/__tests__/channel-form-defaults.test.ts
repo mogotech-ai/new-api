@@ -22,6 +22,7 @@ import { channelSchema } from '../../types'
 import { getChannelConfigurationState } from '../channel-configuration'
 import {
   CHANNEL_FORM_DEFAULT_VALUES,
+  channelFormSchema,
   buildSettingJSON,
   transformChannelToFormDefaults,
 } from '../channel-form'
@@ -65,5 +66,69 @@ describe('channel logging defaults', () => {
     expect(state(false, false)).toBe('configured')
     expect(state(true, true)).toBe('configured')
     expect(state(false, true)).toBe('idle')
+  })
+})
+
+describe('OpenAI SIWC credentials', () => {
+  const credential = {
+    client_id: 'issued-client',
+    access_token: 'access',
+    refresh_token: 'refresh',
+    expires_at: 1800000000,
+  }
+  const form = {
+    ...CHANNEL_FORM_DEFAULT_VALUES,
+    name: 'SIWC test',
+    type: 1,
+    models: 'model',
+    group: ['default'],
+  }
+
+  test('accepts ordinary API keys and complete SIWC sessions in single-key mode', () => {
+    expect(
+      channelFormSchema.safeParse({ ...form, key: 'ordinary-api-key' }).success
+    ).toBe(true)
+    expect(
+      channelFormSchema.safeParse({ ...form, key: JSON.stringify(credential) })
+        .success
+    ).toBe(true)
+  })
+
+  test('rejects incomplete sessions and the registration placeholder client ID', () => {
+    expect(
+      channelFormSchema.safeParse({
+        ...form,
+        key: JSON.stringify({
+          client_id: '',
+          access_token: '',
+          refresh_token: '',
+        }),
+      }).success
+    ).toBe(false)
+    expect(
+      channelFormSchema.safeParse({
+        ...form,
+        key: JSON.stringify({ ...credential, refresh_token: '' }),
+      }).success
+    ).toBe(false)
+    expect(
+      channelFormSchema.safeParse({
+        ...form,
+        key: JSON.stringify({
+          ...credential,
+          client_id: 'dynamic_agent_client',
+        }),
+      }).success
+    ).toBe(false)
+  })
+
+  test('rejects treating a multiline OAuth session as a batch of API keys', () => {
+    expect(
+      channelFormSchema.safeParse({
+        ...form,
+        key: JSON.stringify(credential, null, 2),
+        multi_key_mode: 'batch',
+      }).success
+    ).toBe(false)
   })
 })

@@ -630,6 +630,9 @@ func updateChannelBalance(channel *model.Channel) (channelBalanceResult, error) 
 }
 
 func updateStandardChannelBalance(channel *model.Channel) (float64, error) {
+	if channel.Type == constant.ChannelTypeOpenAI && common.IsSIWCCredential(channel.Key) {
+		return 0, errors.New("SIWC balance is managed in ChatGPT usage settings")
+	}
 	baseURL := constant.GetChannelBaseURL(channel.Type)
 	if channel.GetBaseURL() == "" {
 		channel.BaseURL = &baseURL
