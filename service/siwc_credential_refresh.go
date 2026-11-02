@@ -40,8 +40,9 @@ func StartSIWCCredentialAutoRefreshTask() {
 		if !common.IsMasterNode {
 			return
 		}
-		if 2*time.Duration(common.SyncFrequency)*time.Second > siwcMaxRefreshLead {
-			common.SysError(common.LogText("SYNC_FREQUENCY=%ds exceeds half of the SIWC refresh lead (%s); non-master nodes may send expired SIWC access tokens", common.SyncFrequency, siwcMaxRefreshLead))
+		// Upstream earliest_refresh_at only allows refresh about six minutes before expiry (observed live).
+		if 2*time.Duration(common.SyncFrequency)*time.Second > 5*time.Minute {
+			common.SysError(common.LogText("SYNC_FREQUENCY=%ds is above 150s; SIWC tokens can only be refreshed minutes before expiry, so non-master nodes may send expired SIWC access tokens", common.SyncFrequency))
 		}
 		go func() {
 			ticker := time.NewTicker(time.Minute)
