@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"net/http"
@@ -195,6 +196,16 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 	httpResp = resp.(*http.Response)
 	clientStream := info.IsStream
 	upstreamStream := isResponsesEventStreamContentType(httpResp.Header.Get("Content-Type"))
+	if !upstreamStream && httpResp.StatusCode == http.StatusOK && httpResp.Header.Get("Content-Type") == "" && httpResp.Body != nil {
+		// Some Responses upstreams omit Content-Type; peek without consuming or losing Close.
+		body := bufio.NewReader(httpResp.Body)
+		prefix, _ := body.Peek(6)
+		upstreamStream = strings.HasPrefix(string(prefix), "event:") || strings.HasPrefix(string(prefix), "data:") || strings.HasPrefix(string(prefix), ":")
+		httpResp.Body = struct {
+			io.Reader
+			io.Closer
+		}{body, httpResp.Body}
+	}
 	info.IsStream = clientStream || upstreamStream
 	if httpResp.StatusCode != http.StatusOK {
 		newApiErr := service.RelayErrorHandler(c.Request.Context(), httpResp, false)
