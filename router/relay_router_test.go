@@ -15,6 +15,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/controller"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -185,7 +186,15 @@ func testSIWCNonStreamingChatAndCredentialRotation(t *testing.T, channelID int) 
 			assert.NotContains(t, string(auditJSON), "new-refresh")
 		}
 	}
-	assert.Equal(t, int32(4), calls.Load())
+	// The admin "test channel" button must reach upstream through Responses with stream:true and store:false.
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/channel/test/%d", channelID), nil)
+	ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprint(channelID)}}
+	ctx.Set("id", user.Id)
+	controller.TestChannel(ctx)
+	assert.Contains(t, recorder.Body.String(), `"success":true`)
+	assert.Equal(t, int32(5), calls.Load())
 }
 
 func TestListModelsSupportsOpenAIAndGeminiAuthentication(t *testing.T) {

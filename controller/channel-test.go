@@ -47,7 +47,9 @@ func normalizeChannelTestEndpoint(channel *model.Channel, endpointType string) s
 	if normalized != "" {
 		return normalized
 	}
-	if channel != nil && channel.Type == constant.ChannelTypeCodex {
+	// Codex and SIWC upstreams only serve Responses; live SIWC Chat traffic is converted the same way.
+	if channel != nil && (channel.Type == constant.ChannelTypeCodex ||
+		channel.Type == constant.ChannelTypeOpenAI && common.IsSIWCCredential(channel.Key)) {
 		return string(constant.EndpointTypeOpenAIResponse)
 	}
 	return normalized
@@ -429,6 +431,15 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 				localErr:    err,
 				newAPIError: types.NewError(err, types.ErrorCodeChannelParamOverrideInvalid),
 			}
+		}
+	}
+
+	jsonData, err = service.ApplySIWCResponsesRequirements(info, jsonData)
+	if err != nil {
+		return testResult{
+			context:     c,
+			localErr:    err,
+			newAPIError: types.NewError(err, types.ErrorCodeConvertRequestFailed),
 		}
 	}
 
