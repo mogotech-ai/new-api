@@ -57,6 +57,42 @@ func TestResponsesRequestToChatCompletionsRequestInstructionsAndScalarInput(t *t
 	assert.Equal(t, "abc", ojson.GetBytes(got.Metadata, "trace").String())
 }
 
+func TestResponsesRequestToChatCompletionsRequestPreservesCacheFields(t *testing.T) {
+	for _, present := range []bool{true, false} {
+		name := "absent"
+		if present {
+			name = "present"
+		}
+		t.Run(name, func(t *testing.T) {
+			request := &dto.OpenAIResponsesRequest{Model: "gpt-test", Input: json.RawMessage(`"hello"`)}
+			if present {
+				request.PromptCacheOptions = json.RawMessage(`{"mode":"explicit", "ttl":"12h"}`)
+				request.PromptCacheRetention = json.RawMessage(`"24h"`)
+				request.CacheSalt = json.RawMessage(`"tenant-cache"`)
+			}
+			got, err := ResponsesRequestToChatCompletionsRequest(context.Background(), request)
+			require.NoError(t, err)
+			assert.Equal(t, request.PromptCacheOptions, got.PromptCacheOptions)
+			assert.Equal(t, request.PromptCacheRetention, got.PromptCacheRetention)
+			assert.Equal(t, request.CacheSalt, got.CacheSalt)
+			encoded, err := kitutil.Marshal(got)
+			require.NoError(t, err)
+			for field, want := range map[string]json.RawMessage{
+				"prompt_cache_options":   request.PromptCacheOptions,
+				"prompt_cache_retention": request.PromptCacheRetention,
+				"cache_salt":             request.CacheSalt,
+			} {
+				value := ojson.GetBytes(encoded, field)
+				if present {
+					assert.JSONEq(t, string(want), value.Raw)
+				} else {
+					assert.False(t, value.Exists(), field)
+				}
+			}
+		})
+	}
+}
+
 func TestResponsesRequestToChatCompletionsRequestPreservesQwenThinkingBudget(t *testing.T) {
 	tests := []struct {
 		name   string

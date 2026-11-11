@@ -79,6 +79,8 @@ func ResponsesRequestToChatCompletionsRequest(ctx context.Context, req *dto.Open
 		Metadata:             req.Metadata,
 		SafetyIdentifier:     req.SafetyIdentifier,
 		PromptCacheRetention: req.PromptCacheRetention,
+		PromptCacheOptions:   req.PromptCacheOptions,
+		CacheSalt:            req.CacheSalt,
 		EnableThinking:       req.EnableThinking,
 		ThinkingBudget:       req.ThinkingBudget,
 	}
@@ -398,9 +400,10 @@ func responsesRequestToolsToChat(raw json.RawMessage) ([]dto.ToolCallRequest, er
 			out = append(out, dto.ToolCallRequest{
 				Type: "function",
 				Function: dto.FunctionRequest{
-					Name:        strings.TrimSpace(kitutil.Interface2String(tool["name"])),
-					Description: kitutil.Interface2String(tool["description"]),
-					Parameters:  kitutil.ObjectMember(rawTool, "parameters"),
+					Name:         strings.TrimSpace(kitutil.Interface2String(tool["name"])),
+					Description:  kitutil.Interface2String(tool["description"]),
+					Parameters:   kitutil.ObjectMember(rawTool, "parameters"),
+					CacheControl: kitutil.ObjectMember(rawTool, "cache_control"),
 				},
 			})
 			continue

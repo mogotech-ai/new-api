@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
 	sharedgemini "github.com/QuantumNous/new-api/relaykit/relayconvert/internal/shared/gemini"
@@ -888,6 +889,165 @@ func TestConvertRequestOpenAIChatToGeminiImageConfig(t *testing.T) {
 			require.Contains(t, generationConfig, "imageConfig")
 			assert.JSONEq(t, tt.want, string(generationConfig["imageConfig"]))
 		})
+	}
+}
+
+func TestConvertRequestOpenAIChatToGeminiCachedContent(t *testing.T) {
+	tests := []struct {
+		name      string
+		extraBody json.RawMessage
+		want      string
+	}{
+		{name: "absent"},
+		{name: "snake case", extraBody: json.RawMessage(`{"google":{"cached_content":"cachedContents/snake"}}`), want: "cachedContents/snake"},
+		{name: "camel case", extraBody: json.RawMessage(`{"google":{"cachedContent":"cachedContents/camel"}}`), want: "cachedContents/camel"},
+		{name: "snake case takes precedence", extraBody: json.RawMessage(`{"google":{"cached_content":"cachedContents/snake","cachedContent":"cachedContents/camel"}}`), want: "cachedContents/snake"},
+		{name: "empty snake case", extraBody: json.RawMessage(`{"google":{"cached_content":""}}`)},
+		{name: "empty camel case", extraBody: json.RawMessage(`{"google":{"cachedContent":""}}`)},
+		{name: "empty snake case falls back", extraBody: json.RawMessage(`{"google":{"cached_content":"","cachedContent":"cachedContents/camel"}}`), want: "cachedContents/camel"},
+		{name: "non strings ignored", extraBody: json.RawMessage(`{"google":{"cached_content":123,"cachedContent":false}}`)},
+		{name: "non string snake case falls back", extraBody: json.RawMessage(`{"google":{"cached_content":{},"cachedContent":"cachedContents/camel"}}`), want: "cachedContents/camel"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := OpenAIChatRequestToGeminiGenerateContent(context.Background(), dto.GeneralOpenAIRequest{
+				Model:     "gemini-test",
+				Messages:  []dto.Message{{Role: "user", Content: "hello"}},
+				ExtraBody: tt.extraBody,
+			}, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got.CachedContent)
+			encoded, err := kitutil.Marshal(got)
+			require.NoError(t, err)
+			if tt.want == "" {
+				assert.False(t, ojson.GetBytes(encoded, "cachedContent").Exists())
+			} else {
+				assert.Equal(t, tt.want, ojson.GetBytes(encoded, "cachedContent").String())
+			}
+		})
+	}
+}
+
+func TestConvertRequestClaudeToolCacheControlByTarget(t *testing.T) {
+	const schema = `{"type":"object","properties":{"z":{"type":"string"},"a":{"type":"string"}}}`
+	for _, cacheControl := range []string{"", `{"type":"ephemeral","ttl":"1h"}`} {
+		name, field := "absent", ""
+		if cacheControl != "" {
+			name, field = "present", `,"cache_control":`+cacheControl
+		}
+		t.Run(name, func(t *testing.T) {
+			var request dto.ClaudeRequest
+			rawTools := `[{"name":"lookup","input_schema":` + schema + `,"strict":true` + field + `}]`
+			require.NoError(t, kitutil.Unmarshal([]byte(`{
+				"model":"claude-test","max_tokens":1024,"messages":[{"role":"user","content":"hello"}],
+				"tools":`+rawTools+`
+			}`), &request))
+			native, err := kitutil.Marshal(request)
+			require.NoError(t, err)
+			assert.Equal(t, rawTools, ojson.GetBytes(native, "tools").Raw)
+
+			for _, target := range []types.RelayFormat{types.RelayFormatOpenAI, types.RelayFormatOpenAIResponses} {
+				t.Run(string(target), func(t *testing.T) {
+					wantCacheControl, wantTools := cacheControl, rawTools
+					if target == types.RelayFormatOpenAIResponses {
+						wantCacheControl = ""
+						wantTools = `[{"name":"lookup","input_schema":` + schema + `,"strict":true}]`
+					}
+					converted, err := ConvertRequest(context.Background(), nil, target, &request)
+					require.NoError(t, err)
+					body, err := kitutil.Marshal(converted.Value)
+					require.NoError(t, err)
+					toolPath := "tools.0"
+					if target == types.RelayFormatOpenAI {
+						toolPath += ".function"
+					}
+					if wantCacheControl == "" {
+						assert.False(t, ojson.GetBytes(body, toolPath+".cache_control").Exists())
+					} else {
+						assert.JSONEq(t, wantCacheControl, ojson.GetBytes(body, toolPath+".cache_control").Raw)
+					}
+					assert.Equal(t, schema, ojson.GetBytes(body, toolPath+".parameters").Raw)
+
+					roundTrip, err := ConvertRequest(context.Background(), nil, types.RelayFormatClaude, converted.Value)
+					require.NoError(t, err)
+					body, err = kitutil.Marshal(roundTrip.Value)
+					require.NoError(t, err)
+					assert.JSONEq(t, wantTools, ojson.GetBytes(body, "tools").Raw)
+					assert.Equal(t, schema, ojson.GetBytes(body, "tools.0.input_schema").Raw)
+
+					gemini, err := ConvertRequest(context.Background(), nil, types.RelayFormatGemini, converted.Value)
+					require.NoError(t, err)
+					body, err = kitutil.Marshal(gemini.Value)
+					require.NoError(t, err)
+					assert.NotContains(t, string(body), "cache_control")
+				})
+			}
+			after, err := kitutil.Marshal(request)
+			require.NoError(t, err)
+			assert.Equal(t, native, after)
+		})
+	}
+}
+
+func TestConvertRequestChatToolCacheControlByTarget(t *testing.T) {
+	const schema = `{"type":"object","properties":{"z":{"type":"string"},"a":{"type":"string"}}}`
+	tests := []struct {
+		name     string
+		root     string
+		function string
+		want     string
+	}{
+		{name: "absent"},
+		{name: "tool root", root: `,"cache_control":{"type":"ephemeral"}`, want: `{"type":"ephemeral"}`},
+		{name: "function", function: `,"cache_control":{"type":"ephemeral","ttl":"1h"}`, want: `{"type":"ephemeral","ttl":"1h"}`},
+		{name: "tool root preferred", root: `,"cache_control":{"type":"ephemeral","ttl":"5m"}`, function: `,"cache_control":{"type":"ephemeral","ttl":"1h"}`, want: `{"type":"ephemeral","ttl":"5m"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var request dto.GeneralOpenAIRequest
+			require.NoError(t, kitutil.Unmarshal([]byte(`{
+			"model":"claude-test","max_tokens":1024,"messages":[{"role":"user","content":"hello"}],
+			"tools":[{"type":"function"`+tt.root+`,
+			"function":{"name":"lookup","parameters":`+schema+tt.function+`}}]
+		}`), &request))
+			got, err := OpenAIChatRequestToClaudeMessages(context.Background(), nil, request)
+			require.NoError(t, err)
+			body, err := kitutil.Marshal(got)
+			require.NoError(t, err)
+			if tt.want == "" {
+				assert.False(t, ojson.GetBytes(body, "tools.0.cache_control").Exists())
+			} else {
+				assert.JSONEq(t, tt.want, ojson.GetBytes(body, "tools.0.cache_control").Raw)
+			}
+			assert.Equal(t, schema, ojson.GetBytes(body, "tools.0.input_schema").Raw)
+			responses, err := ChatCompletionsRequestToResponsesRequest(&request)
+			require.NoError(t, err)
+			assert.JSONEq(t, `[{"type":"function","name":"lookup","parameters":`+schema+`}]`, string(responses.Tools))
+			assert.Equal(t, schema, ojson.GetBytes(responses.Tools, "0.parameters").Raw)
+		})
+	}
+}
+
+func TestConvertRequestResponsesToolCacheControlByTarget(t *testing.T) {
+	for _, cacheControl := range []string{"", `{"type":"ephemeral","ttl":"1h"}`} {
+		field := ""
+		if cacheControl != "" {
+			field = `,"cache_control":` + cacheControl
+		}
+		request := &dto.OpenAIResponsesRequest{
+			Model: "claude-test", Input: json.RawMessage(`"hello"`), MaxOutputTokens: lo.ToPtr(uint(1024)),
+			Tools: json.RawMessage(`[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{}}` + field + `}]`),
+		}
+		got, err := OpenAIResponsesRequestToClaudeMessages(context.Background(), nil, request)
+		require.NoError(t, err)
+		body, err := kitutil.Marshal(got)
+		require.NoError(t, err)
+		assert.JSONEq(t, `[{"name":"lookup","input_schema":{"type":"object","properties":{}}`+field+`}]`, ojson.GetBytes(body, "tools").Raw)
+		gemini, err := OpenAIResponsesRequestToGeminiChat(context.Background(), request, nil)
+		require.NoError(t, err)
+		body, err = kitutil.Marshal(gemini)
+		require.NoError(t, err)
+		assert.NotContains(t, string(body), "cache_control")
 	}
 }
 

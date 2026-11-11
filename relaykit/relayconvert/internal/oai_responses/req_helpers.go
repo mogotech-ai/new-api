@@ -146,9 +146,10 @@ func responsesRequestFunctionDeclarations(raw []byte) ([]dto.FunctionRequest, er
 			continue
 		}
 		functions = append(functions, dto.FunctionRequest{
-			Name:        name,
-			Description: kitutil.Interface2String(tool["description"]),
-			Parameters:  kitutil.ObjectMember(rawTool, "parameters"),
+			Name:         name,
+			Description:  kitutil.Interface2String(tool["description"]),
+			Parameters:   kitutil.ObjectMember(rawTool, "parameters"),
+			CacheControl: kitutil.ObjectMember(rawTool, "cache_control"),
 		})
 	}
 	return functions, nil

@@ -50,7 +50,7 @@ func extractOpenAIChatRequest(request any) (any, Set, error) {
 			set.Definitions = append(set.Definitions, Definition{
 				Kind:      KindFunction,
 				Execution: ExecutionClient,
-				Function:  &Function{Name: function.Name, Description: function.Description, Parameters: function.Parameters, Strict: function.Strict},
+				Function:  &Function{Name: function.Name, Description: function.Description, Parameters: function.Parameters, Strict: function.Strict, CacheControl: function.CacheControl},
 			})
 		}
 	}
@@ -60,14 +60,19 @@ func extractOpenAIChatRequest(request any) (any, Set, error) {
 				set.Definitions = append(set.Definitions, definition)
 				continue
 			}
+			cacheControl := tool.CacheControl
+			if len(cacheControl) == 0 {
+				cacheControl = tool.Function.CacheControl
+			}
 			set.Definitions = append(set.Definitions, Definition{
 				Kind:      KindFunction,
 				Execution: ExecutionClient,
 				Function: &Function{
-					Name:        tool.Function.Name,
-					Description: tool.Function.Description,
-					Parameters:  tool.Function.Parameters,
-					Strict:      tool.Function.Strict,
+					Name:         tool.Function.Name,
+					Description:  tool.Function.Description,
+					Parameters:   tool.Function.Parameters,
+					Strict:       tool.Function.Strict,
+					CacheControl: cacheControl,
 				},
 			})
 			continue
@@ -403,10 +408,11 @@ func decodeOpenAIResponsesDefinition(raw json.RawMessage) (Definition, error) {
 			Name:      strings.TrimSpace(kitutil.Interface2String(tool["name"])),
 			Raw:       cloneRaw(raw),
 			Function: &Function{
-				Name:        strings.TrimSpace(kitutil.Interface2String(tool["name"])),
-				Description: kitutil.Interface2String(tool["description"]),
-				Parameters:  kitutil.ObjectMember(raw, "parameters"),
-				Strict:      boolPointer(tool, "strict"),
+				Name:         strings.TrimSpace(kitutil.Interface2String(tool["name"])),
+				Description:  kitutil.Interface2String(tool["description"]),
+				Parameters:   kitutil.ObjectMember(raw, "parameters"),
+				Strict:       boolPointer(tool, "strict"),
+				CacheControl: kitutil.ObjectMember(raw, "cache_control"),
 			},
 		}, nil
 	}
@@ -510,10 +516,11 @@ func decodeClaudeDefinition(raw json.RawMessage) (Definition, error) {
 			Name:      strings.TrimSpace(kitutil.Interface2String(tool["name"])),
 			Raw:       cloneRaw(raw),
 			Function: &Function{
-				Name:        strings.TrimSpace(kitutil.Interface2String(tool["name"])),
-				Description: kitutil.Interface2String(tool["description"]),
-				Parameters:  kitutil.ObjectMember(raw, "input_schema"),
-				Strict:      boolPointer(tool, "strict"),
+				Name:         strings.TrimSpace(kitutil.Interface2String(tool["name"])),
+				Description:  kitutil.Interface2String(tool["description"]),
+				Parameters:   kitutil.ObjectMember(raw, "input_schema"),
+				Strict:       boolPointer(tool, "strict"),
+				CacheControl: kitutil.ObjectMember(raw, "cache_control"),
 			},
 		}, nil
 	}

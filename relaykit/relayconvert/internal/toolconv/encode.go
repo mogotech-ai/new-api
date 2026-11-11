@@ -73,10 +73,11 @@ func attachOpenAIChatRequest(request any, set Set, options *convmeta.Options) (a
 			target.Tools = append(target.Tools, dto.ToolCallRequest{
 				Type: "function",
 				Function: dto.FunctionRequest{
-					Name:        definition.Function.Name,
-					Description: definition.Function.Description,
-					Parameters:  parameters,
-					Strict:      definition.Function.Strict,
+					Name:         definition.Function.Name,
+					Description:  definition.Function.Description,
+					Parameters:   parameters,
+					Strict:       definition.Function.Strict,
+					CacheControl: definition.Function.CacheControl,
 				},
 			})
 		case KindWebSearch:
@@ -438,6 +439,7 @@ func attachOpenAIResponsesRequest(request any, set Set, options *convmeta.Option
 				return nil, diagnostics, err
 			}
 			diagnostics = append(diagnostics, schemaDiagnostics...)
+			// Responses function tools do not support Anthropic cache_control.
 			tool := map[string]any{
 				"type":        "function",
 				"name":        definition.Function.Name,
@@ -559,10 +561,11 @@ func attachClaudeRequest(request any, set Set, options *convmeta.Options) (any, 
 				return nil, diagnostics, fmt.Errorf("tools[%d].input_schema: function parameters must be a JSON object", index)
 			}
 			tools = append(tools, &dto.Tool{
-				Name:        definition.Function.Name,
-				Description: definition.Function.Description,
-				InputSchema: inputSchema,
-				Strict:      definition.Function.Strict,
+				Name:         definition.Function.Name,
+				Description:  definition.Function.Description,
+				InputSchema:  inputSchema,
+				Strict:       definition.Function.Strict,
+				CacheControl: definition.Function.CacheControl,
 			})
 		case KindWebSearch:
 			if set.Source == types.RelayFormatGemini {

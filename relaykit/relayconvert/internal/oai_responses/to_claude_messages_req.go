@@ -173,9 +173,10 @@ func responsesFunctionDeclarationsToClaudeTools(functions []dto.FunctionRequest)
 	for _, function := range functions {
 		inputSchema, _ := sharedclaude.FunctionParametersToInputSchema(function.Parameters)
 		tools = append(tools, &dto.Tool{
-			Name:        function.Name,
-			Description: function.Description,
-			InputSchema: inputSchema,
+			Name:         function.Name,
+			Description:  function.Description,
+			InputSchema:  inputSchema,
+			CacheControl: function.CacheControl,
 		})
 	}
 	return tools

@@ -107,9 +107,10 @@ func ClaudeMessagesRequestToOpenAIChat(ctx context.Context, claudeRequest dto.Cl
 		openAITool := dto.ToolCallRequest{
 			Type: "function",
 			Function: dto.FunctionRequest{
-				Name:        claudeTool.Name,
-				Description: claudeTool.Description,
-				Parameters:  claudeTool.InputSchema,
+				Name:         claudeTool.Name,
+				Description:  claudeTool.Description,
+				Parameters:   claudeTool.InputSchema,
+				CacheControl: claudeTool.CacheControl,
 			},
 		}
 		openAITools = append(openAITools, openAITool)

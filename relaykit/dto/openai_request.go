@@ -410,10 +410,11 @@ func (r *GeneralOpenAIRequest) GetSystemRoleName() string {
 const CustomType = "custom"
 
 type ToolCallRequest struct {
-	ID       string          `json:"id,omitempty"`
-	Type     string          `json:"type"`
-	Function FunctionRequest `json:"function"`
-	Custom   json.RawMessage `json:"custom,omitempty"`
+	ID           string          `json:"id,omitempty"`
+	Type         string          `json:"type"`
+	Function     FunctionRequest `json:"function"`
+	Custom       json.RawMessage `json:"custom,omitempty"`
+	CacheControl json.RawMessage `json:"cache_control,omitempty"`
 	// Native is a complete vendor tool object sent instead of the fields
 	// above. Function has no omitempty, so a non-function tool would
 	// otherwise carry "function":{"name":""}, which vendor schemas with
@@ -434,9 +435,10 @@ type FunctionRequest struct {
 	Name        string `json:"name"`
 	// Parameters keeps the client's schema bytes: upstreams generate
 	// arguments in schema property order, and a decoded map would sort it.
-	Parameters json.RawMessage `json:"parameters,omitempty"`
-	Arguments  string          `json:"arguments,omitempty"`
-	Strict     *bool           `json:"strict,omitempty"`
+	Parameters   json.RawMessage `json:"parameters,omitempty"`
+	Arguments    string          `json:"arguments,omitempty"`
+	Strict       *bool           `json:"strict,omitempty"`
+	CacheControl json.RawMessage `json:"cache_control,omitempty"`
 }
 
 // UnmarshalJSON leaves a null parameters value out, as the former decoded

@@ -63,6 +63,12 @@ func OpenAIChatRequestToGeminiGenerateContent(c context.Context, textRequest dto
 		}
 
 		if googleBody, ok := extraBody["google"].(map[string]any); ok {
+			if cachedContent, ok := googleBody["cached_content"].(string); ok && cachedContent != "" {
+				geminiRequest.CachedContent = cachedContent
+			} else if cachedContent, ok := googleBody["cachedContent"].(string); ok && cachedContent != "" {
+				geminiRequest.CachedContent = cachedContent
+			}
+
 			if _, hasErrorParam := googleBody["thinkingConfig"]; hasErrorParam {
 				return nil, errors.New("extra_body.google.thinkingConfig is not supported, use extra_body.google.thinking_config instead")
 			}
@@ -165,6 +171,7 @@ func OpenAIChatRequestToGeminiGenerateContent(c context.Context, textRequest dto
 				return nil, fmt.Errorf("invalid tool parameters: %w", err)
 			}
 			tool.Function.Parameters = parameters
+			tool.Function.CacheControl = nil // Gemini function declarations do not accept Anthropic cache_control.
 			functions = append(functions, tool.Function)
 		}
 		geminiTools := geminiRequest.GetTools()

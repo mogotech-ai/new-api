@@ -86,6 +86,7 @@ func OpenAIResponsesRequestToGeminiChat(c context.Context, req *dto.OpenAIRespon
 		return nil, err
 	}
 	for i := range functions {
+		functions[i].CacheControl = nil // Gemini function declarations do not accept Anthropic cache_control.
 		functions[i].Parameters, err = sharedgemini.CleanFunctionParametersJSON(functions[i].Parameters)
 		if err != nil {
 			return nil, fmt.Errorf("invalid tool parameters: %w", err)

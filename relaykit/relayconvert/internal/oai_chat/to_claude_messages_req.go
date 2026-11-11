@@ -25,10 +25,15 @@ func OpenAIChatRequestToClaudeMessages(c context.Context, info convmeta.Meta, te
 			continue
 		}
 		inputSchema, _ := sharedclaude.FunctionParametersToInputSchema(tool.Function.Parameters)
+		cacheControl := tool.CacheControl
+		if len(cacheControl) == 0 {
+			cacheControl = tool.Function.CacheControl
+		}
 		claudeTools = append(claudeTools, &dto.Tool{
-			Name:        tool.Function.Name,
-			Description: tool.Function.Description,
-			InputSchema: inputSchema,
+			Name:         tool.Function.Name,
+			Description:  tool.Function.Description,
+			InputSchema:  inputSchema,
+			CacheControl: cacheControl,
 		})
 	}
 

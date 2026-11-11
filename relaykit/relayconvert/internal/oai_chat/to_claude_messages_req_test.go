@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/stretchr/testify/assert"
@@ -14,7 +15,7 @@ import (
 func TestOpenAIChatRequestToClaudeMessagesPreservesTextCacheControl(t *testing.T) {
 	cacheControl := json.RawMessage(`{"type":"ephemeral"}`)
 	var request dto.GeneralOpenAIRequest
-	require.NoError(t, json.Unmarshal([]byte(`{
+	require.NoError(t, kitutil.Unmarshal([]byte(`{
 		"model":"claude-test",
 		"max_tokens":1024,
 		"messages":[
@@ -34,6 +35,41 @@ func TestOpenAIChatRequestToClaudeMessagesPreservesTextCacheControl(t *testing.T
 	require.True(t, ok)
 	require.Len(t, content, 1)
 	assert.JSONEq(t, string(cacheControl), string(content[0].CacheControl))
+}
+
+func TestOpenAIChatRequestToClaudeMessagesPreservesToolCacheControl(t *testing.T) {
+	const schema = `{"type":"object","properties":{"z":{"type":"string"},"a":{"type":"string"}}}`
+	tests := []struct {
+		name     string
+		root     string
+		function string
+		want     string
+	}{
+		{name: "absent"},
+		{name: "tool root", root: `,"cache_control":{"type":"ephemeral"}`, want: `{"type":"ephemeral"}`},
+		{name: "function", function: `,"cache_control":{"type":"ephemeral","ttl":"1h"}`, want: `{"type":"ephemeral","ttl":"1h"}`},
+		{name: "tool root takes precedence", root: `,"cache_control":{"type":"ephemeral","ttl":"5m"}`, function: `,"cache_control":{"type":"ephemeral","ttl":"1h"}`, want: `{"type":"ephemeral","ttl":"5m"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var request dto.GeneralOpenAIRequest
+			require.NoError(t, kitutil.Unmarshal([]byte(`{
+				"model":"claude-test","max_tokens":1024,"messages":[{"role":"user","content":"hello"}],
+				"tools":[{"type":"function"`+tt.root+`,"function":{"name":"lookup","parameters":`+schema+tt.function+`}}]
+			}`), &request))
+			got, err := OpenAIChatRequestToClaudeMessages(context.Background(), nil, request)
+			require.NoError(t, err)
+			encoded, err := kitutil.Marshal(got)
+			require.NoError(t, err)
+			cacheControl := ojson.GetBytes(encoded, "tools.0.cache_control")
+			if tt.want == "" {
+				assert.False(t, cacheControl.Exists())
+			} else {
+				assert.JSONEq(t, tt.want, cacheControl.Raw)
+			}
+			assert.Equal(t, schema, ojson.GetBytes(encoded, "tools.0.input_schema").Raw)
+		})
+	}
 }
 
 func TestOpenAIChatRequestToClaudeMessagesStopSequences(t *testing.T) {
