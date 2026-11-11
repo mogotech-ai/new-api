@@ -18,7 +18,7 @@ import (
 )
 
 func TestApplySIWCResponsesRequirementsNonSIWC(t *testing.T) {
-	body := []byte(`{"stream":false,"store":true,"input":"hello"}`)
+	body := []byte(`{"stream":false,"store":true,"input":"hello","prompt_cache_retention":"24h","prompt_cache_options":{"foo":true},"cache_salt":"tenant","prompt_cache_key":"caller-cache"}`)
 	for _, info := range []*relaycommon.RelayInfo{nil, {}, {ChannelMeta: &relaycommon.ChannelMeta{}}} {
 		got, err := ApplySIWCResponsesRequirements(info, body)
 		require.NoError(t, err)
@@ -26,6 +26,32 @@ func TestApplySIWCResponsesRequirementsNonSIWC(t *testing.T) {
 		if info != nil {
 			assert.Empty(t, info.SIWCSessionID)
 		}
+	}
+}
+
+func TestApplySIWCResponsesRequirementsCacheFields(t *testing.T) {
+	generatedSession := fmt.Sprintf("%x", sha256.Sum256([]byte("7\n9\ngpt-test\nhello")))
+	for _, tc := range []struct {
+		name, fields, wantKey string
+	}{
+		{"explicit cache key", `,"prompt_cache_retention":"24h","prompt_cache_options":{"foo":true},"cache_salt":"tenant","prompt_cache_key":"caller-cache"`, "caller-cache"},
+		{"injected cache key", `,"prompt_cache_retention":"24h","prompt_cache_options":{"foo":true},"cache_salt":"tenant"`, generatedSession},
+		{"absent cache fields", "", generatedSession},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			info := &relaycommon.RelayInfo{TokenId: 7, UserId: 9, ChannelMeta: &relaycommon.ChannelMeta{IsSIWC: true, UpstreamModelName: "gpt-test"}}
+			body, err := ApplySIWCResponsesRequirements(info, []byte(`{"stream":false,"store":true,"input":"hello","extra":{ "z": 1, "a": 2 }`+tc.fields+`}`))
+			require.NoError(t, err)
+			for _, field := range []string{"prompt_cache_retention", "prompt_cache_options", "cache_salt"} {
+				assert.False(t, gjson.GetBytes(body, field).Exists(), field)
+			}
+			assert.Equal(t, tc.wantKey, gjson.GetBytes(body, "prompt_cache_key").String())
+			assert.Equal(t, tc.wantKey, info.SIWCSessionID)
+			assert.Equal(t, gjson.True, gjson.GetBytes(body, "stream").Type)
+			assert.Equal(t, gjson.False, gjson.GetBytes(body, "store").Type)
+			assert.JSONEq(t, `[{"role":"user","content":"hello"}]`, gjson.GetBytes(body, "input").Raw)
+			assert.Equal(t, `{ "z": 1, "a": 2 }`, gjson.GetBytes(body, "extra").Raw)
+		})
 	}
 }
 

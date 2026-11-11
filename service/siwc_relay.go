@@ -33,6 +33,13 @@ func ApplySIWCResponsesRequirements(info *relaycommon.RelayInfo, body []byte) ([
 	if err != nil {
 		return nil, err
 	}
+	// SIWC rejects retention; omit the other cache controls until upstream support is confirmed.
+	for _, field := range []string{"prompt_cache_retention", "prompt_cache_options", "cache_salt"} {
+		body, err = sjson.DeleteBytes(body, field)
+		if err != nil {
+			return nil, err
+		}
+	}
 	sessionID := resolveSIWCSessionID(info, body)
 	cacheKey := gjson.GetBytes(body, "prompt_cache_key")
 	if !cacheKey.Exists() {
