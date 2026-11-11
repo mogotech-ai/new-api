@@ -207,6 +207,18 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, header *http.Header, info *
 		if info.RelayMode != relayconstant.RelayModeResponses {
 			return errors.New("SIWC authorization only supports the Responses endpoint")
 		}
+		if info.SIWCSessionID != "" {
+			hasSessionID := false
+			for key := range *header {
+				if strings.EqualFold(key, "session_id") {
+					hasSessionID = true
+					break
+				}
+			}
+			if !hasSessionID {
+				header.Set("session_id", info.SIWCSessionID)
+			}
+		}
 		header.Set("Accept", "text/event-stream")
 	}
 	if info.ChannelType == constant.ChannelTypeAzure {

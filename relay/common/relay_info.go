@@ -111,6 +111,7 @@ type RelayInfo struct {
 
 	RequestURLPath     string
 	RequestHeaders     map[string]string
+	SIWCSessionID      string
 	ShouldIncludeUsage bool
 	DisablePing        bool // 是否禁止向下游发送自定义 Ping
 	ClientWs           *websocket.Conn

@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -18,6 +19,43 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSetupRequestHeaderSIWCSession(t *testing.T) {
+	for _, tc := range []struct {
+		name, sessionID, existingKey string
+		siwc                         bool
+	}{
+		{name: "SIWC session", siwc: true, sessionID: "generated-session"},
+		{name: "existing canonical header", siwc: true, sessionID: "generated-session", existingKey: "Session_id"},
+		{name: "existing lowercase header", siwc: true, sessionID: "generated-session", existingKey: "session_id"},
+		{name: "existing mixed case header", siwc: true, sessionID: "generated-session", existingKey: "SeSsIoN_Id"},
+		{name: "non-SIWC", sessionID: "generated-session"},
+		{name: "empty session", siwc: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			info := &relaycommon.RelayInfo{
+				RelayMode: relayconstant.RelayModeResponses, SIWCSessionID: tc.sessionID,
+				ChannelMeta: &relaycommon.ChannelMeta{ChannelType: constant.ChannelTypeOpenAI, IsSIWC: tc.siwc, ApiKey: "test-key"},
+			}
+			header := make(http.Header)
+			if tc.existingKey != "" {
+				header[tc.existingKey] = []string{"existing-session"}
+			}
+			require.NoError(t, (&Adaptor{}).SetupRequestHeader(c, &header, info))
+			if tc.existingKey != "" {
+				assert.Equal(t, []string{"existing-session"}, header[tc.existingKey])
+				delete(header, tc.existingKey)
+				assert.Empty(t, header.Get("session_id"))
+			} else if tc.siwc {
+				assert.Equal(t, tc.sessionID, header.Get("session_id"))
+			} else {
+				assert.Empty(t, header.Get("session_id"))
+			}
+		})
+	}
+}
 
 func newResponsesChatTestContext(t *testing.T, body string, isStream bool) (*gin.Context, *httptest.ResponseRecorder, *http.Response, *relaycommon.RelayInfo) {
 	t.Helper()

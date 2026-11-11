@@ -24,19 +24,23 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
+	"golang.org/x/net/http/httpguts"
 )
 
 type policyTestTransport struct {
-	path     string
-	body     []byte
-	calls    int
-	response string
-	header   http.Header
+	path      string
+	body      []byte
+	calls     int
+	response  string
+	header    http.Header
+	sessionID string
 }
 
 func (s *policyTestTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	s.calls++
 	s.path = r.URL.Path
+	s.sessionID = r.Header.Get("session_id")
 	var err error
 	s.body, err = io.ReadAll(r.Body)
 	if err != nil {
@@ -51,6 +55,103 @@ func (s *policyTestTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	}
 	return &http.Response{StatusCode: http.StatusBadRequest, Header: make(http.Header),
 		Body: io.NopCloser(strings.NewReader(`{"error":{"message":"policy test","type":"invalid_request_error"}}`)), Request: r}, nil
+}
+
+func TestSIWCRequestsSendPromptCacheSession(t *testing.T) {
+	if service.GetHttpClient() == nil {
+		service.InitHttpClient()
+	}
+	client := service.GetHttpClient()
+	previousTransport := client.Transport
+	t.Cleanup(func() { client.Transport = previousTransport })
+	credential, err := common.Marshal(common.SIWCCredential{
+		ClientID: "test-client", AccessToken: "test-access", RefreshToken: "test-refresh", ExpiresAt: 1,
+	})
+	require.NoError(t, err)
+
+	for _, path := range []string{"/v1/chat/completions", "/v1/responses"} {
+		for _, tc := range []struct {
+			name, caller, override, cacheKey, clientHeader, overrideHeader string
+		}{
+			{name: "generated"},
+			{name: "caller", caller: "caller-cache"},
+			{name: "channel override", override: "channel-cache", overrideHeader: "channel-cache"},
+			{name: "body override", cacheKey: "body-cache"},
+			{name: "newline body key", cacheKey: "body\ncache"},
+			{name: "caller and body mismatch", caller: "caller-cache", cacheKey: "body-cache"},
+			{name: "channel override applied last", caller: "caller-cache", override: "channel-cache", overrideHeader: "channel-cache"},
+			{name: "client header override", override: "{client_header:X-Session-Id}", clientHeader: "client-cache", overrideHeader: "client-cache"},
+			{name: "missing client header override", override: "{client_header:X-Session-Id}"},
+			{name: "blank client header override", override: "{client_header:X-Session-Id}", clientHeader: " \t "},
+			{name: "API key override excluded from body", override: "prefix-{api_key}", overrideHeader: "prefix-test-access"},
+		} {
+			t.Run(path+"/"+tc.name, func(t *testing.T) {
+				transport := &policyTestTransport{response: `{"id":"resp_test","object":"response","model":"gpt-test","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`}
+				client.Transport = transport
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest(http.MethodPost, path, nil)
+				if tc.caller != "" {
+					c.Request.Header.Set("session_id", tc.caller)
+				}
+				if tc.clientHeader != "" {
+					c.Request.Header.Set("X-Session-Id", tc.clientHeader)
+				}
+				common.SetContextKey(c, constant.ContextKeyOriginalModel, "gpt-test")
+				common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+				common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, "https://siwc.invalid")
+				common.SetContextKey(c, constant.ContextKeyChannelKey, string(credential))
+				if tc.override != "" {
+					common.SetContextKey(c, constant.ContextKeyChannelHeaderOverride, map[string]any{"session_id": tc.override})
+				}
+				if tc.cacheKey != "" {
+					common.SetContextKey(c, constant.ContextKeyChannelParamOverride, map[string]any{"prompt_cache_key": tc.cacheKey})
+				}
+				var info *relaycommon.RelayInfo
+				if path == "/v1/chat/completions" {
+					request := &dto.GeneralOpenAIRequest{Model: "gpt-test", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
+					info = relaycommon.GenRelayInfoOpenAI(c, request)
+					info.InitChannelMeta(c)
+					adaptor := GetAdaptor(info.ApiType)
+					adaptor.Init(info)
+					_, apiErr := textRequestViaResponses(c, info, adaptor, request)
+					require.Nil(t, apiErr)
+				} else {
+					request := &dto.OpenAIResponsesRequest{Model: "gpt-test", Input: []byte(`"hello"`)}
+					info = relaycommon.GenRelayInfoResponses(c, request)
+					adaptor, body, closer, apiErr := PrepareResponsesRequest(c, info, request)
+					require.Nil(t, apiErr)
+					defer closer.Close()
+					response, err := adaptor.DoRequest(c, info, body)
+					require.NoError(t, err)
+					require.IsType(t, &http.Response{}, response)
+					require.NoError(t, response.(*http.Response).Body.Close())
+				}
+				assert.True(t, info.IsSIWC)
+				assert.Equal(t, 1, transport.calls)
+				assert.Equal(t, "/v1/responses", transport.path)
+				assert.NotEmpty(t, info.SIWCSessionID)
+				wantHeader := info.SIWCSessionID
+				if tc.caller != "" {
+					assert.Equal(t, tc.caller, info.SIWCSessionID)
+				} else if strings.TrimSpace(tc.clientHeader) != "" {
+					assert.Equal(t, strings.TrimSpace(tc.clientHeader), info.SIWCSessionID)
+				}
+				if tc.overrideHeader != "" {
+					wantHeader = tc.overrideHeader
+				}
+				wantKey := info.SIWCSessionID
+				if tc.cacheKey != "" {
+					wantKey = tc.cacheKey
+				}
+				assert.Equal(t, wantHeader, transport.sessionID)
+				assert.True(t, httpguts.ValidHeaderFieldValue(transport.sessionID))
+				assert.Equal(t, wantKey, gjson.GetBytes(transport.body, "prompt_cache_key").String())
+				assert.NotContains(t, string(transport.body), "{client_header:")
+				assert.NotContains(t, string(transport.body), "{api_key}")
+				assert.NotContains(t, string(transport.body), "test-access")
+			})
+		}
+	}
 }
 
 func TestChatResponsesPolicyMatchesMappedModel(t *testing.T) {
