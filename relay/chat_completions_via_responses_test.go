@@ -120,11 +120,9 @@ func TestSIWCRequestsSendPromptCacheSession(t *testing.T) {
 					adaptor.Init(info)
 					_, apiErr := textRequestViaResponses(c, info, adaptor, &request)
 					require.Nil(t, apiErr)
-					assert.JSONEq(t, `[
-						{"role":"developer","content":[{"type":"input_text","text":"system rules"}]},
-						{"role":"developer","content":[{"type":"input_text","text":"developer rules"}]},
-						{"role":"user","content":[{"type":"input_text","text":"hello"}]}
-					]`, gjson.GetBytes(transport.body, "input").Raw)
+					// The caller-marked prefix before the last user message is folded into instructions.
+					assert.Equal(t, "## DEVELOPER\nsystem rules\n\n## DEVELOPER\ndeveloper rules", gjson.GetBytes(transport.body, "instructions").String())
+					assert.JSONEq(t, `[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]`, gjson.GetBytes(transport.body, "input").Raw)
 				} else {
 					request := &dto.OpenAIResponsesRequest{Model: "gpt-test", Input: []byte(`[{"role":"developer","content":[{"type":"input_text","text":"rules","prompt_cache_breakpoint":{"mode":"explicit"}}]},{"role":"user","content":[{"type":"input_text","text":"hello","prompt_cache_breakpoint":{"mode":"explicit"}}]}]`),
 						Instructions: json.RawMessage(`[{"type":"input_text","text":"prefix","prompt_cache_breakpoint":{"mode":"explicit"}}]`)}
@@ -164,6 +162,52 @@ func TestSIWCRequestsSendPromptCacheSession(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestSIWCChatFoldsForecastPrefixIntoInstructions(t *testing.T) {
+	if service.GetHttpClient() == nil {
+		service.InitHttpClient()
+	}
+	client := service.GetHttpClient()
+	previousTransport := client.Transport
+	t.Cleanup(func() { client.Transport = previousTransport })
+	credential, err := common.Marshal(common.SIWCCredential{
+		ClientID: "test-client", AccessToken: "test-access", RefreshToken: "test-refresh", ExpiresAt: 1,
+	})
+	require.NoError(t, err)
+	transport := &policyTestTransport{response: `{"id":"resp_test","object":"response","model":"gpt-test","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`}
+	client.Transport = transport
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	c.Set("token_name", "forecast")
+	common.SetContextKey(c, constant.ContextKeyOriginalModel, "gpt-test")
+	common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+	common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, "https://siwc.invalid")
+	common.SetContextKey(c, constant.ContextKeyChannelKey, string(credential))
+	var request dto.GeneralOpenAIRequest
+	require.NoError(t, common.Unmarshal([]byte(`{"model":"gpt-test","messages":[
+		{"role":"system","content":"rules"},
+		{"role":"user","content":"PREGAME"},
+		{"role":"assistant","content":"Acknowledged."},
+		{"role":"user","content":"segment 1"},
+		{"role":"assistant","content":"forecast 1"},
+		{"role":"user","content":"segment 2"}
+	]}`), &request))
+	info := relaycommon.GenRelayInfoOpenAI(c, &request)
+	info.InitChannelMeta(c)
+	adaptor := GetAdaptor(info.ApiType)
+	adaptor.Init(info)
+	_, apiErr := textRequestViaResponses(c, info, adaptor, &request)
+	require.Nil(t, apiErr)
+
+	require.True(t, info.IsSIWC)
+	assert.Equal(t, "forecast", info.TokenName)
+	assert.Equal(t, "rules\n\n## USER\nPREGAME\n\n## ASSISTANT\nAcknowledged.", gjson.GetBytes(transport.body, "instructions").String())
+	input := gjson.GetBytes(transport.body, "input").Array()
+	require.Len(t, input, 3)
+	assert.Equal(t, []string{"user", "assistant", "user"}, []string{input[0].Get("role").String(), input[1].Get("role").String(), input[2].Get("role").String()})
+	assert.Contains(t, input[0].Raw, "segment 1")
+	assert.Contains(t, input[2].Raw, "segment 2")
 }
 
 func TestNativeChatWithoutBreakpointsPreservesRequestBytes(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"sync"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 )
 
@@ -20,17 +21,16 @@ func matchAnyModelPattern(patterns []string, model string) bool {
 		if pattern == "" {
 			continue
 		}
-		re, ok := chatResponsesRegexCache.Load(pattern)
+		cached, ok := chatResponsesRegexCache.Load(pattern)
 		if !ok {
+			// Invalid patterns are cached as nil: logged once, then non-matching, so they never break runtime traffic.
 			compiled, err := regexp.Compile(pattern)
 			if err != nil {
-				// Treat invalid patterns as non-matching to avoid breaking runtime traffic.
-				continue
+				common.SysError(common.LogText("invalid regex pattern %q: %v", pattern, err))
 			}
-			re = compiled
-			chatResponsesRegexCache.Store(pattern, re)
+			cached, _ = chatResponsesRegexCache.LoadOrStore(pattern, compiled)
 		}
-		if re.(*regexp.Regexp).MatchString(model) {
+		if re := cached.(*regexp.Regexp); re != nil && re.MatchString(model) {
 			return true
 		}
 	}

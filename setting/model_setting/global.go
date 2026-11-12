@@ -42,6 +42,45 @@ type PromptCacheAutoBreakpoint struct {
 	ModelPatterns []string `json:"model_patterns,omitempty"` // Matches upstream model names after channel mapping.
 }
 
+// SIWCInstructionsFold moves a stable leading run of Responses input messages
+// into instructions on SIWC channels, where only the end of instructions and
+// the last user message are cache write points.
+type SIWCInstructionsFold struct {
+	Enabled                  bool `json:"enabled"`
+	HonorExplicitBreakpoints bool `json:"honor_explicit_breakpoints"` // Caller-marked prompt_cache_breakpoint is the boundary.
+	// No omitempty: an exported empty list must not decode back to the defaults.
+	Rules []SIWCInstructionsFoldRule `json:"rules"`
+}
+
+// UnmarshalJSON decodes rules into a fresh slice. The config manager decodes a
+// stored override over the defaults in place, and JSON decoding reuses slice
+// elements, so an overriding rule would otherwise inherit the criteria of the
+// default rule at the same index.
+func (s *SIWCInstructionsFold) UnmarshalJSON(data []byte) error {
+	type plain SIWCInstructionsFold
+	next := plain(*s)
+	next.Rules = nil
+	if err := common.Unmarshal(data, &next); err != nil {
+		return err
+	}
+	if next.Rules == nil {
+		next.Rules = s.Rules // override without rules keeps the current ones
+	}
+	*s = SIWCInstructionsFold(next)
+	return nil
+}
+
+// SIWCInstructionsFoldRule matches when every non-empty criterion matches; a
+// rule with no criteria never matches.
+type SIWCInstructionsFoldRule struct {
+	Name                   string   `json:"name"`
+	TokenNames             []string `json:"token_names,omitempty"`               // Exact token name match.
+	ModelPatterns          []string `json:"model_patterns,omitempty"`            // Regex on the upstream model name.
+	PromptCacheKeyPatterns []string `json:"prompt_cache_key_patterns,omitempty"` // Regex on the body prompt_cache_key, which must then be a string.
+	Boundary               string   `json:"boundary"`                            // "first_assistant" or "keep_last".
+	KeepLast               int      `json:"keep_last,omitempty"`                 // keep_last: trailing input items left in input (>=1).
+}
+
 type GlobalSettings struct {
 	PassThroughRequestEnabled bool     `json:"pass_through_request_enabled"`
 	ThinkingModelBlacklist    []string `json:"thinking_model_blacklist"`
@@ -50,6 +89,7 @@ type GlobalSettings struct {
 	EffortTailModelIDs               []string                         `json:"effort_tail_model_ids"`
 	ChatCompletionsToResponsesPolicy ChatCompletionsToResponsesPolicy `json:"chat_completions_to_responses_policy"`
 	PromptCacheAutoBreakpoint        PromptCacheAutoBreakpoint        `json:"prompt_cache_auto_breakpoint"`
+	SIWCInstructionsFold             SIWCInstructionsFold             `json:"siwc_instructions_fold"`
 }
 
 // 默认配置
@@ -74,6 +114,14 @@ var defaultOpenaiSettings = GlobalSettings{
 		Enabled: true,
 		// gpt-5.6 and later minors, gpt-6 to gpt-19; two-digit majors stop at 19 so Azure-style gpt-35-turbo stays out.
 		ModelPatterns: []string{`^gpt-5\.([6-9]|\d{2,})(-|$)`, `^gpt-([6-9]|1\d)(\.\d+)?(-|$)`},
+	},
+	SIWCInstructionsFold: SIWCInstructionsFold{
+		Enabled:                  true,
+		HonorExplicitBreakpoints: true,
+		Rules: []SIWCInstructionsFoldRule{
+			{Name: "forecast", TokenNames: []string{"forecast"}, Boundary: "first_assistant"},
+			{Name: "tape-live-c15", TokenNames: []string{"tape-dev"}, PromptCacheKeyPatterns: []string{`:c15_forecast$`}, Boundary: "keep_last", KeepLast: 2},
+		},
 	},
 }
 

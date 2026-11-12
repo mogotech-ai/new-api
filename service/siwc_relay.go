@@ -40,6 +40,11 @@ func ApplySIWCResponsesRequirements(info *relaycommon.RelayInfo, body []byte) ([
 			return nil, err
 		}
 	}
+	// Fold before the breakpoint markers are stripped and before the session seed reads instructions.
+	body, err = foldSIWCLeadingInputIntoInstructions(info, body)
+	if err != nil {
+		return nil, err
+	}
 	// SIWC also rejects explicit cache breakpoints on content parts.
 	request := gjson.ParseBytes(body)
 	var breakpointPaths []string
