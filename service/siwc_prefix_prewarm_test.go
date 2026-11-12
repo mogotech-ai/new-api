@@ -1,11 +1,13 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -278,7 +280,17 @@ func TestSIWCPrefixPrewarmWarmState(t *testing.T) {
 		assert.Nil(t, prewarm, "max_attempts per boundary reached")
 	})
 
-	t.Run("failed prewarm stays cold", func(t *testing.T) {
+	t.Run("failed prewarm stays cold and releases its boundary", func(t *testing.T) {
+		var logs bytes.Buffer
+		common.LogWriterMu.Lock()
+		previousWriter := gin.DefaultWriter
+		gin.DefaultWriter = &logs
+		common.LogWriterMu.Unlock()
+		t.Cleanup(func() {
+			common.LogWriterMu.Lock()
+			gin.DefaultWriter = previousWriter
+			common.LogWriterMu.Unlock()
+		})
 		for name, send := range map[string]func(context.Context, []byte) (*http.Response, error){
 			"http error": func(context.Context, []byte) (*http.Response, error) {
 				return &http.Response{StatusCode: http.StatusTooManyRequests, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
@@ -289,16 +301,30 @@ func TestSIWCPrefixPrewarmWarmState(t *testing.T) {
 			"no output": func(context.Context, []byte) (*http.Response, error) {
 				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.created\"}\n\n"))}, nil
 			},
-			"transport error": func(context.Context, []byte) (*http.Response, error) { return nil, io.ErrUnexpectedEOF },
+			"transport error with a key in the URL": func(context.Context, []byte) (*http.Response, error) {
+				return nil, &url.Error{Op: "Post", URL: "https://upstream.invalid/v1/responses?key=sk-secret-value", Err: io.ErrUnexpectedEOF}
+			},
+			"panic": func(context.Context, []byte) (*http.Response, error) { panic("send bug") },
+			"stalled stream hits the timeout": func(ctx context.Context, _ []byte) (*http.Response, error) {
+				reader, writer := io.Pipe()
+				go func() { <-ctx.Done(); writer.CloseWithError(ctx.Err()) }()
+				return &http.Response{StatusCode: http.StatusOK, Body: reader}, nil
+			},
 		} {
 			t.Run(name, func(t *testing.T) {
-				siwcPrewarmTestSetup(t, nil)
+				siwcPrewarmTestSetup(t, func(s *model_setting.SIWCPrefixPrewarm) { s.TimeoutSeconds = 1 })
 				PlanSIWCPrefixPrewarm(siwcPrewarmTestInfo(), siwcForecastTestBody(t, "A", 1, "1"))
 				PlanSIWCPrefixPrewarm(siwcPrewarmTestInfo(), siwcForecastTestBody(t, "A", 1, "2"))
 				prewarm := PlanSIWCPrefixPrewarm(siwcPrewarmTestInfo(), siwcForecastTestBody(t, "A", 1, "3"))
 				require.NotNil(t, prewarm)
-				prewarm.run(send)
+				logs.Reset()
+				func() {
+					defer func() { _ = recover() }() // the relay pool's panic handler in production
+					prewarm.run(send)
+				}()
 				assert.Zero(t, siwcPrefixes.inflight)
+				assert.Contains(t, logs.String(), "SIWC prefix prewarm: outcome=")
+				assert.NotContains(t, logs.String(), "sk-secret-value")
 				assert.NotNil(t, PlanSIWCPrefixPrewarm(siwcPrewarmTestInfo(), siwcForecastTestBody(t, "A", 1, "4")))
 			})
 		}
@@ -307,17 +333,17 @@ func TestSIWCPrefixPrewarmWarmState(t *testing.T) {
 
 func TestSIWCPrefixPrewarmLimits(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		mutate  func(*model_setting.SIWCPrefixPrewarm)
-		info    func(*relaycommon.RelayInfo)
-		segment int  // segments per game
-		want    int  // prewarms for games A, B, C at round 3
-		evict   bool // other games run between the sightings of A, B, C and their third request
+		name   string
+		mutate func(*model_setting.SIWCPrefixPrewarm)
+		info   func(*relaycommon.RelayInfo)
+		want   int  // prewarms for games A, B, C at round 3
+		evict  bool // other games run between the sightings of A, B, C and their third request
+		inert  bool // the request leaves no trace in the index
 	}{
 		{name: "defaults", want: 3},
-		{name: "disabled", mutate: func(s *model_setting.SIWCPrefixPrewarm) { s.Enabled = false }},
-		{name: "not SIWC", info: func(info *relaycommon.RelayInfo) { info.IsSIWC = false }},
-		{name: "channel test", info: func(info *relaycommon.RelayInfo) { info.IsChannelTest = true }},
+		{name: "disabled", mutate: func(s *model_setting.SIWCPrefixPrewarm) { s.Enabled = false }, inert: true},
+		{name: "not SIWC", info: func(info *relaycommon.RelayInfo) { info.IsSIWC = false }, inert: true},
+		{name: "channel test", info: func(info *relaycommon.RelayInfo) { info.IsChannelTest = true }, inert: true},
 		{name: "min_prefix_tokens", mutate: func(s *model_setting.SIWCPrefixPrewarm) { s.MinPrefixTokens = 3000 }},
 		{name: "min_gain_tokens", mutate: func(s *model_setting.SIWCPrefixPrewarm) { s.MinGainTokens = 3000 }},
 		{name: "min_prior_sightings", mutate: func(s *model_setting.SIWCPrefixPrewarm) { s.MinPriorSightings = 3 }},
@@ -353,8 +379,21 @@ func TestSIWCPrefixPrewarmLimits(t *testing.T) {
 				}
 			}
 			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.inert, siwcPrefixes.lru.Len() == 0)
 		})
 	}
+}
+
+func TestSIWCPrefixPrewarmScopeRateMapIsBounded(t *testing.T) {
+	siwcPrewarmTestSetup(t, nil)
+	idle := []time.Time{time.Now().Add(-2 * time.Minute)}
+	for i := range 2 * siwcPrefixScopeSweepAt {
+		siwcPrefixes.scopeRuns[fmt.Sprint("idle scope ", i)] = idle
+	}
+	for round := 1; round <= 3; round++ {
+		PlanSIWCPrefixPrewarm(siwcPrewarmTestInfo(), siwcForecastTestBody(t, "A", 1, fmt.Sprint(round)))
+	}
+	assert.Len(t, siwcPrefixes.scopeRuns, 1, "only the scope that just prewarmed stays")
 }
 
 func TestSIWCPrefixPrewarmConcurrentGames(t *testing.T) {

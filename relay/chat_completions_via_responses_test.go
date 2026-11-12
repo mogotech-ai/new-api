@@ -276,6 +276,9 @@ func TestSIWCPrefixPrewarm(t *testing.T) {
 	newContext := func(path string) *gin.Context {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Request = httptest.NewRequest(http.MethodPost, path, nil)
+		// A caller session keeps prompt_cache_key independent of the prewarm switch,
+		// which also selects the generated session seed.
+		c.Request.Header.Set("session_id", "forecast-session")
 		common.SetContextKey(c, constant.ContextKeyOriginalModel, "gpt-test")
 		common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
 		common.SetContextKey(c, constant.ContextKeyChannelId, 17)
@@ -315,7 +318,8 @@ func TestSIWCPrefixPrewarm(t *testing.T) {
 		}
 	}
 
-	// Baseline real bodies with prewarm off; the planner keeps no state then.
+	// Baseline real bodies with prewarm off: the planner keeps no state then, and
+	// prewarm on must not change a single byte of the real request.
 	model_setting.GetGlobalSettings().SIWCPrefixPrewarm.Enabled = false
 	for round := 1; round <= 3; round++ {
 		_, _, apiErr := chat(101, fmt.Sprint(round))
@@ -404,6 +408,38 @@ func TestSIWCPrefixPrewarm(t *testing.T) {
 	assert.Equal(t, "["+items[0].Raw+","+items[1].Raw+","+items[2].Raw+"]", gjson.GetBytes(prewarm.body, "input").Raw)
 	assert.Equal(t, int64(16), gjson.GetBytes(prewarm.body, "max_output_tokens").Int())
 	assert.Equal(t, reals[2].header.Get("session_id"), prewarm.header.Get("session_id"))
+
+	// A panic while the prewarm request is built stays out of the real request and
+	// still releases the boundary: with one slot, a leak would block every later prewarm.
+	model_setting.GetGlobalSettings().SIWCPrefixPrewarm.MaxConcurrent = 1
+	finalBody := func(round int) (*gin.Context, *relaycommon.RelayInfo, []byte) {
+		c := newContext("/v1/responses")
+		info := relaycommon.GenRelayInfoResponses(c, &dto.OpenAIResponsesRequest{Model: "gpt-test"})
+		info.UserId = 303
+		info.InitChannelMeta(c)
+		body, err := service.ApplySIWCResponsesRequirements(info, []byte(`{"model":"gpt-test","instructions":"RULES","input":`+input+fmt.Sprintf(`{"role":"user","content":"DYNAMIC %d"}]}`, round)))
+		require.NoError(t, err)
+		return c, info, body
+	}
+	for round := 1; round <= 3; round++ {
+		c, info, body := finalBody(round)
+		require.NotPanics(t, func() { startSIWCPrefixPrewarm(c, info, siwcHeaderPanicAdaptor{&openaichannel.Adaptor{}}, body) })
+	}
+	round = 3
+	require.Eventually(t, func() bool {
+		round++
+		c, info, body := finalBody(round)
+		startSIWCPrefixPrewarm(c, info, GetAdaptor(info.ApiType), body)
+		return len(prewarms) > 0
+	}, 5*time.Second, 20*time.Millisecond)
+	assert.Equal(t, "Bearer test-access", nextPrewarm().header.Get("Authorization"))
+}
+
+// siwcHeaderPanicAdaptor panics while request headers are built.
+type siwcHeaderPanicAdaptor struct{ *openaichannel.Adaptor }
+
+func (siwcHeaderPanicAdaptor) SetupRequestHeader(*gin.Context, *http.Header, *relaycommon.RelayInfo) error {
+	panic("header bug")
 }
 
 func TestNativeChatWithoutBreakpointsPreservesRequestBytes(t *testing.T) {

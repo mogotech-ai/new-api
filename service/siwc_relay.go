@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"golang.org/x/net/http/httpguts"
@@ -40,9 +41,7 @@ func ApplySIWCResponsesRequirements(info *relaycommon.RelayInfo, body []byte) ([
 			return nil, err
 		}
 	}
-	// Seed the session from the caller's messages, so the fold cannot change the
-	// first user text it reads; fold before the breakpoint markers are stripped.
-	sessionID := resolveSIWCSessionID(info, body)
+	// Fold before the breakpoint markers are stripped and before the session seed reads instructions.
 	body, err = foldSIWCLeadingInputIntoInstructions(info, body)
 	if err != nil {
 		return nil, err
@@ -76,6 +75,7 @@ func ApplySIWCResponsesRequirements(info *relaycommon.RelayInfo, body []byte) ([
 			}
 		}
 	}
+	sessionID := resolveSIWCSessionID(info, body)
 	cacheKey := gjson.GetBytes(body, "prompt_cache_key")
 	if !cacheKey.Exists() {
 		body, err = sjson.SetBytes(body, "prompt_cache_key", sessionID)
@@ -129,8 +129,9 @@ func resolveSIWCSessionID(info *relaycommon.RelayInfo, body []byte) string {
 		return strings.TrimSpace(key.String())
 	}
 
-	// Instructions alone are often one shared system prompt, which would put every
-	// conversation of a token on one cache key; the first user text tells them apart.
+	// Without the fold, instructions are often one shared system prompt, which would
+	// put every conversation of a token on one cache key; the first user text tells
+	// them apart. With prefix prewarm off the seed stays instructions-or-first-user.
 	instructions := siwcPromptText(request.Get("instructions"))
 	firstUser := ""
 	input := request.Get("input")
@@ -155,7 +156,7 @@ func resolveSIWCSessionID(info *relaycommon.RelayInfo, body []byte) string {
 		}
 	}
 	prefix := instructions[:min(len(instructions), 32*1024)]
-	if firstUser != "" {
+	if firstUser != "" && (prefix == "" || model_setting.GetGlobalSettings().SIWCPrefixPrewarm.Enabled) {
 		if prefix != "" {
 			prefix += "\n\n"
 		}

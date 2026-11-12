@@ -6,9 +6,11 @@ import (
 	"container/list"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -34,6 +36,10 @@ const siwcPrefixBytesPerToken = 4
 
 const siwcPrefixAttemptWindow = 10 * time.Minute
 
+// The per-scope rate map is swept of scopes idle for a minute once it holds
+// this many; the global concurrency cap keeps live scopes far below it.
+const siwcPrefixScopeSweepAt = 1024
+
 // Top-level fields that do not change the upstream prompt tokens or cache
 // routing. They stay out of the prefix scope, and the prewarm may override them.
 var siwcPrefixScopeIgnoredFields = []string{"input", "stream", "stream_options", "max_output_tokens", "temperature", "top_p", "top_logprobs", "store", "metadata", "background"}
@@ -53,7 +59,7 @@ type siwcPrefixIndex struct {
 	entries  map[[32]byte]*list.Element
 	lru      list.List // of *siwcPrefixEntry, most recently used first
 	inflight int
-	// shortcut: one key per user/token/model/channel that ever prewarmed, dropped only once its minute empties on a later visit; sweep if those combinations become unbounded.
+	// Prewarm start times in the last minute per user/token/model/channel, oldest first.
 	scopeRuns map[string][]time.Time
 }
 
@@ -195,6 +201,13 @@ func PlanSIWCPrefixPrewarm(info *relaycommon.RelayInfo, body []byte) *SIWCPrefix
 		if now.Sub(targetEntry.attemptsAt) >= siwcPrefixAttemptWindow {
 			targetEntry.attempts, targetEntry.attemptsAt = 0, now
 		}
+		if len(idx.scopeRuns) >= siwcPrefixScopeSweepAt {
+			for key, runs := range idx.scopeRuns {
+				if now.Sub(runs[len(runs)-1]) >= time.Minute {
+					delete(idx.scopeRuns, key)
+				}
+			}
+		}
 		scopeKey := fmt.Sprintf("%d:%d:%s:%d", info.UserId, info.TokenId, info.GetUpstreamModelName(), info.ChannelId)
 		runs := slices.DeleteFunc(idx.scopeRuns[scopeKey], func(at time.Time) bool { return now.Sub(at) >= time.Minute })
 		switch {
@@ -283,6 +296,10 @@ func (p *SIWCPrefixPrewarm) run(send func(ctx context.Context, body []byte) (*ht
 	defer cancel()
 	resp, err := send(ctx, p.body)
 	if err != nil {
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) { // a base URL may carry a key in its query
+			urlErr.URL = relaycommon.SanitizeURLForLog(urlErr.URL)
+		}
 		outcome, failure = "error", err.Error()
 		return
 	}

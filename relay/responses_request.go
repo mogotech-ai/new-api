@@ -3,6 +3,7 @@ package relay
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -100,12 +101,37 @@ func PrepareResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, req *d
 
 // startSIWCPrefixPrewarm sends the background prewarm the planner picks for a
 // final SIWC body, if any, to the real request's URL with its headers,
-// credential and proxy. The real request is neither changed nor delayed.
+// credential and proxy. The real request is neither changed nor delayed, and a
+// prewarm failure, even a panic, never reaches it.
 func startSIWCPrefixPrewarm(c *gin.Context, info *relaycommon.RelayInfo, adaptor relaychannel.Adaptor, body []byte) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.LogError(c, common.LogText("SIWC prefix prewarm skipped after panic: %v", r))
+		}
+	}()
 	prewarm := service.PlanSIWCPrefixPrewarm(info, body)
 	if prewarm == nil {
 		return
 	}
+	var url string
+	var header http.Header
+	var host string
+	var client *http.Client
+	buildErr := errors.New("prewarm request was not built")
+	// Start even when building fails or panics, so the planned boundary is released.
+	defer func() {
+		prewarm.Start(func(ctx context.Context, body []byte) (*http.Response, error) {
+			if buildErr != nil {
+				return nil, buildErr
+			}
+			request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+			if err != nil {
+				return nil, err
+			}
+			request.Header, request.Host = header, host
+			return client.Do(request)
+		})
+	}()
 	// Headers are resolved now: the gin context is recycled once the request ends.
 	url, err := adaptor.GetRequestURL(info)
 	var template *http.Request
@@ -118,17 +144,9 @@ func startSIWCPrefixPrewarm(c *gin.Context, info *relaycommon.RelayInfo, adaptor
 	if err == nil {
 		err = relaychannel.ApplyHeaderOverride(info, c, template)
 	}
-	var client *http.Client
 	if err == nil {
+		header, host = template.Header, template.Host
 		client, err = service.GetHttpClientWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
 	}
-	prewarm.Start(func(ctx context.Context, body []byte) (*http.Response, error) {
-		if err != nil {
-			return nil, err
-		}
-		request := template.Clone(ctx)
-		request.Body = io.NopCloser(bytes.NewReader(body))
-		request.ContentLength = int64(len(body))
-		return client.Do(request)
-	})
+	buildErr = err
 }

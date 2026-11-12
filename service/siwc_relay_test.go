@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -105,46 +106,56 @@ func TestApplySIWCResponsesRequirementsCacheFields(t *testing.T) {
 
 func TestApplySIWCResponsesRequirementsGeneratedSession(t *testing.T) {
 	longPrefix := strings.Repeat("界", 11_000)
+	previous := model_setting.GetGlobalSettings().SIWCPrefixPrewarm
+	t.Cleanup(func() { model_setting.GetGlobalSettings().SIWCPrefixPrewarm = previous })
 	for _, tc := range []struct {
 		name, body, prefix string
+		prewarmOff         string // seed with prefix prewarm off when it differs: instructions, else the first user text
 	}{
-		{"instructions", `{"instructions":"Answer briefly"}`, "Answer briefly"},
+		{name: "instructions", body: `{"instructions":"Answer briefly"}`, prefix: "Answer briefly"},
 		// A shared system prompt alone would put every conversation of a token on one cache key.
-		{"instructions and first user", `{"instructions":"Answer briefly","input":[{"role":"assistant","content":"ignored"},{"role":"user","content":"game 1"},{"role":"user","content":"later"}]}`, "Answer briefly\n\ngame 1"},
-		{"instructions and string input", `{"instructions":"Answer briefly","input":"hello"}`, "Answer briefly\n\nhello"},
-		{"both byte caps", fmt.Sprintf(`{"instructions":%q,"input":[{"role":"user","content":%q}]}`, longPrefix, "x"+longPrefix), longPrefix[:32*1024] + "\n\n" + ("x" + longPrefix)[:32*1024]},
-		{"instruction whitespace preserved", `{"instructions":"  Answer briefly  "}`, "  Answer briefly  "},
-		{"instruction text blocks", `{"instructions":[{"type":"text","text":"Answer "},{"type":"text","text":"briefly"}]}`, "Answer briefly"},
-		{"instruction text object", `{"instructions":{"text":"Answer briefly"}}`, "Answer briefly"},
-		{"instruction byte cap", fmt.Sprintf(`{"instructions":%q}`, longPrefix), longPrefix[:32*1024]},
-		{"string input", `{"stream":false,"store":true,"input":"hello"}`, "hello"},
-		{"first user message", `{"input":[{"role":"assistant","content":"ignored"},{"role":"user","content":"hello"},{"role":"user","content":"later"}]}`, "hello"},
-		{"user text blocks", `{"input":[{"role":"user","content":[{"type":"input_image","image_url":"ignored"},{"type":"input_text","text":"hello"},{"type":"input_text","text":" world"}]}]}`, "hello world"},
-		{"input text item", `{"input":[{"type":"input_text","text":"hello"}]}`, "hello"},
-		{"text field", `{"input":[{"text":"hello"}]}`, "hello"},
-		{"skip tool and assistant text", `{"input":[{"type":"function_call_output","text":"ignored"},{"role":"assistant","text":"ignored"},{"role":"user","text":"hello"}]}`, "hello"},
-		{"skip nontext instructions", `{"instructions":{"unknown":true},"input":"hello"}`, "hello"},
-		{"no text", `{"input":[{"role":"assistant","content":"ignored"},{"role":"user","content":[{"type":"input_image","image_url":"ignored"}]}]}`, ""},
-		{"no input", `{}`, ""},
-		{"empty input", `{"instructions":"","input":""}`, ""},
+		{name: "instructions and first user", body: `{"instructions":"Answer briefly","input":[{"role":"assistant","content":"ignored"},{"role":"user","content":"game 1"},{"role":"user","content":"later"}]}`, prefix: "Answer briefly\n\ngame 1", prewarmOff: "Answer briefly"},
+		{name: "instructions and string input", body: `{"instructions":"Answer briefly","input":"hello"}`, prefix: "Answer briefly\n\nhello", prewarmOff: "Answer briefly"},
+		{name: "both byte caps", body: fmt.Sprintf(`{"instructions":%q,"input":[{"role":"user","content":%q}]}`, longPrefix, "x"+longPrefix), prefix: longPrefix[:32*1024] + "\n\n" + ("x" + longPrefix)[:32*1024], prewarmOff: longPrefix[:32*1024]},
+		{name: "instruction whitespace preserved", body: `{"instructions":"  Answer briefly  "}`, prefix: "  Answer briefly  "},
+		{name: "instruction text blocks", body: `{"instructions":[{"type":"text","text":"Answer "},{"type":"text","text":"briefly"}]}`, prefix: "Answer briefly"},
+		{name: "instruction text object", body: `{"instructions":{"text":"Answer briefly"}}`, prefix: "Answer briefly"},
+		{name: "instruction byte cap", body: fmt.Sprintf(`{"instructions":%q}`, longPrefix), prefix: longPrefix[:32*1024]},
+		{name: "string input", body: `{"stream":false,"store":true,"input":"hello"}`, prefix: "hello"},
+		{name: "first user message", body: `{"input":[{"role":"assistant","content":"ignored"},{"role":"user","content":"hello"},{"role":"user","content":"later"}]}`, prefix: "hello"},
+		{name: "user text blocks", body: `{"input":[{"role":"user","content":[{"type":"input_image","image_url":"ignored"},{"type":"input_text","text":"hello"},{"type":"input_text","text":" world"}]}]}`, prefix: "hello world"},
+		{name: "input text item", body: `{"input":[{"type":"input_text","text":"hello"}]}`, prefix: "hello"},
+		{name: "text field", body: `{"input":[{"text":"hello"}]}`, prefix: "hello"},
+		{name: "skip tool and assistant text", body: `{"input":[{"type":"function_call_output","text":"ignored"},{"role":"assistant","text":"ignored"},{"role":"user","text":"hello"}]}`, prefix: "hello"},
+		{name: "skip nontext instructions", body: `{"instructions":{"unknown":true},"input":"hello"}`, prefix: "hello"},
+		{name: "no text", body: `{"input":[{"role":"assistant","content":"ignored"},{"role":"user","content":[{"type":"input_image","image_url":"ignored"}]}]}`, prefix: ""},
+		{name: "no input", body: `{}`, prefix: ""},
+		{name: "empty input", body: `{"instructions":"","input":""}`, prefix: ""},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			want := fmt.Sprintf("%x", sha256.Sum256([]byte("7\n9\ngpt-test\n"+tc.prefix)))
-			for range 2 {
-				info := &relaycommon.RelayInfo{TokenId: 7, UserId: 9, ChannelMeta: &relaycommon.ChannelMeta{IsSIWC: true, UpstreamModelName: "gpt-test"}}
-				body, err := ApplySIWCResponsesRequirements(info, []byte(tc.body))
-				require.NoError(t, err)
-				assert.Equal(t, want, info.SIWCSessionID)
-				assert.Equal(t, want, gjson.GetBytes(body, "prompt_cache_key").String())
-				assert.True(t, gjson.GetBytes(body, "stream").Bool())
-				assert.Equal(t, gjson.False, gjson.GetBytes(body, "store").Type)
-				if input := gjson.Get(tc.body, "input"); input.Type == gjson.String {
-					assert.True(t, gjson.GetBytes(body, "input").IsArray())
-					assert.Equal(t, "user", gjson.GetBytes(body, "input.0.role").String())
-					assert.Equal(t, input.String(), gjson.GetBytes(body, "input.0.content").String())
+		for _, prewarm := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s prewarm=%v", tc.name, prewarm), func(t *testing.T) {
+				model_setting.GetGlobalSettings().SIWCPrefixPrewarm.Enabled = prewarm
+				prefix := tc.prefix
+				if !prewarm && tc.prewarmOff != "" {
+					prefix = tc.prewarmOff
 				}
-			}
-		})
+				want := fmt.Sprintf("%x", sha256.Sum256([]byte("7\n9\ngpt-test\n"+prefix)))
+				for range 2 {
+					info := &relaycommon.RelayInfo{TokenId: 7, UserId: 9, ChannelMeta: &relaycommon.ChannelMeta{IsSIWC: true, UpstreamModelName: "gpt-test"}}
+					body, err := ApplySIWCResponsesRequirements(info, []byte(tc.body))
+					require.NoError(t, err)
+					assert.Equal(t, want, info.SIWCSessionID)
+					assert.Equal(t, want, gjson.GetBytes(body, "prompt_cache_key").String())
+					assert.True(t, gjson.GetBytes(body, "stream").Bool())
+					assert.Equal(t, gjson.False, gjson.GetBytes(body, "store").Type)
+					if input := gjson.Get(tc.body, "input"); input.Type == gjson.String {
+						assert.True(t, gjson.GetBytes(body, "input").IsArray())
+						assert.Equal(t, "user", gjson.GetBytes(body, "input.0.role").String())
+						assert.Equal(t, input.String(), gjson.GetBytes(body, "input.0.content").String())
+					}
+				}
+			})
+		}
 	}
 }
 

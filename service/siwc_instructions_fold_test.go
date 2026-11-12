@@ -174,11 +174,6 @@ func TestSIWCInstructionsFold(t *testing.T) {
 		assert.Equal(t, gjson.GetBytes(first, "instructions").Raw, gjson.GetBytes(second, "instructions").Raw)
 		// The fold also gives both requests the same generated cache session.
 		assert.Equal(t, gjson.GetBytes(first, "prompt_cache_key").String(), gjson.GetBytes(second, "prompt_cache_key").String())
-		// The session seed reads the caller's messages, so turning the fold off keeps the key.
-		model_setting.GetGlobalSettings().SIWCInstructionsFold.Enabled = false
-		unfolded, err := ApplySIWCResponsesRequirements(siwcFoldTestInfo("forecast"), []byte(prefix+`{"role":"user","content":"seg 1"}]}`))
-		require.NoError(t, err)
-		assert.Equal(t, gjson.GetBytes(first, "prompt_cache_key").String(), gjson.GetBytes(unfolded, "prompt_cache_key").String())
 	})
 
 	t.Run("non-SIWC body is untouched", func(t *testing.T) {
