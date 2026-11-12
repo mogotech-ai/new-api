@@ -40,7 +40,9 @@ func ApplySIWCResponsesRequirements(info *relaycommon.RelayInfo, body []byte) ([
 			return nil, err
 		}
 	}
-	// Fold before the breakpoint markers are stripped and before the session seed reads instructions.
+	// Seed the session from the caller's messages, so the fold cannot change the
+	// first user text it reads; fold before the breakpoint markers are stripped.
+	sessionID := resolveSIWCSessionID(info, body)
 	body, err = foldSIWCLeadingInputIntoInstructions(info, body)
 	if err != nil {
 		return nil, err
@@ -74,7 +76,6 @@ func ApplySIWCResponsesRequirements(info *relaycommon.RelayInfo, body []byte) ([
 			}
 		}
 	}
-	sessionID := resolveSIWCSessionID(info, body)
 	cacheKey := gjson.GetBytes(body, "prompt_cache_key")
 	if !cacheKey.Exists() {
 		body, err = sjson.SetBytes(body, "prompt_cache_key", sessionID)
@@ -128,31 +129,38 @@ func resolveSIWCSessionID(info *relaycommon.RelayInfo, body []byte) string {
 		return strings.TrimSpace(key.String())
 	}
 
-	prefix := siwcPromptText(request.Get("instructions"))
-	if prefix == "" {
-		input := request.Get("input")
-		if input.Type == gjson.String {
-			prefix = input.String()
-		} else {
-			for _, item := range input.Array() {
-				role, kind := item.Get("role").String(), item.Get("type").String()
-				if role != "" && role != "user" {
-					continue
-				}
-				if role == "" && kind != "input_text" && kind != "text" && kind != "" {
-					continue
-				}
-				prefix = siwcPromptText(item.Get("content"))
-				if prefix == "" {
-					prefix = siwcPromptText(item)
-				}
-				if prefix != "" {
-					break
-				}
+	// Instructions alone are often one shared system prompt, which would put every
+	// conversation of a token on one cache key; the first user text tells them apart.
+	instructions := siwcPromptText(request.Get("instructions"))
+	firstUser := ""
+	input := request.Get("input")
+	if input.Type == gjson.String {
+		firstUser = input.String()
+	} else {
+		for _, item := range input.Array() {
+			role, kind := item.Get("role").String(), item.Get("type").String()
+			if role != "" && role != "user" {
+				continue
+			}
+			if role == "" && kind != "input_text" && kind != "text" && kind != "" {
+				continue
+			}
+			firstUser = siwcPromptText(item.Get("content"))
+			if firstUser == "" {
+				firstUser = siwcPromptText(item)
+			}
+			if firstUser != "" {
+				break
 			}
 		}
 	}
-	prefix = prefix[:min(len(prefix), 32*1024)]
+	prefix := instructions[:min(len(instructions), 32*1024)]
+	if firstUser != "" {
+		if prefix != "" {
+			prefix += "\n\n"
+		}
+		prefix += firstUser[:min(len(firstUser), 32*1024)]
+	}
 	seed := fmt.Sprintf("%d\n%d\n%s\n%s", info.TokenId, info.UserId, info.GetUpstreamModelName(), prefix)
 	return fmt.Sprintf("%x", common.Sha256Raw([]byte(seed)))
 }

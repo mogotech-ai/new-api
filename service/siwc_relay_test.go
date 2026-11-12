@@ -108,7 +108,11 @@ func TestApplySIWCResponsesRequirementsGeneratedSession(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, prefix string
 	}{
-		{"instructions", `{"instructions":"Answer briefly","input":"ignored"}`, "Answer briefly"},
+		{"instructions", `{"instructions":"Answer briefly"}`, "Answer briefly"},
+		// A shared system prompt alone would put every conversation of a token on one cache key.
+		{"instructions and first user", `{"instructions":"Answer briefly","input":[{"role":"assistant","content":"ignored"},{"role":"user","content":"game 1"},{"role":"user","content":"later"}]}`, "Answer briefly\n\ngame 1"},
+		{"instructions and string input", `{"instructions":"Answer briefly","input":"hello"}`, "Answer briefly\n\nhello"},
+		{"both byte caps", fmt.Sprintf(`{"instructions":%q,"input":[{"role":"user","content":%q}]}`, longPrefix, "x"+longPrefix), longPrefix[:32*1024] + "\n\n" + ("x" + longPrefix)[:32*1024]},
 		{"instruction whitespace preserved", `{"instructions":"  Answer briefly  "}`, "  Answer briefly  "},
 		{"instruction text blocks", `{"instructions":[{"type":"text","text":"Answer "},{"type":"text","text":"briefly"}]}`, "Answer briefly"},
 		{"instruction text object", `{"instructions":{"text":"Answer briefly"}}`, "Answer briefly"},
