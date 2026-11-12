@@ -17,8 +17,12 @@ func siwcFoldTestInfo(tokenName string) *relaycommon.RelayInfo {
 }
 
 func TestSIWCInstructionsFold(t *testing.T) {
-	previous := model_setting.GetGlobalSettings().SIWCInstructionsFold
-	t.Cleanup(func() { model_setting.GetGlobalSettings().SIWCInstructionsFold = previous })
+	defaults := *model_setting.GetGlobalSettings()
+	t.Cleanup(func() { *model_setting.GetGlobalSettings() = defaults })
+	// The fold is off by default and never runs while prefix prewarm is enabled.
+	model_setting.GetGlobalSettings().SIWCPrefixPrewarm.Enabled = false
+	previous := defaults.SIWCInstructionsFold
+	previous.Enabled = true
 
 	const forecastInput = `[{"role":"user","content":"PREGAME"},{"role":"assistant","content":"Acknowledged."},{ "role":"user", "content":"seg 1" },{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a1"}]},{"role":"user","content":"last"}]`
 	const forecastRest = `[{ "role":"user", "content":"seg 1" },{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a1"}]},{"role":"user","content":"last"}]`
@@ -91,6 +95,12 @@ func TestSIWCInstructionsFold(t *testing.T) {
 			mutate: func(s *model_setting.SIWCInstructionsFold) { s.Enabled = false },
 		},
 		{
+			name: "prefix prewarm enabled", token: "forecast", input: forecastInput,
+			mutate: func(*model_setting.SIWCInstructionsFold) {
+				model_setting.GetGlobalSettings().SIWCPrefixPrewarm.Enabled = true
+			},
+		},
+		{
 			name: "explicit breakpoints not honored", token: "other",
 			input:     `[{"role":"developer","content":[{"type":"input_text","text":"rules","prompt_cache_breakpoint":{"mode":"explicit"}}]},{"role":"user","content":"question"}]`,
 			mutate:    func(s *model_setting.SIWCInstructionsFold) { s.HonorExplicitBreakpoints = false },
@@ -123,6 +133,7 @@ func TestSIWCInstructionsFold(t *testing.T) {
 				tc.mutate(&setting)
 			}
 			model_setting.GetGlobalSettings().SIWCInstructionsFold = setting
+			t.Cleanup(func() { model_setting.GetGlobalSettings().SIWCPrefixPrewarm.Enabled = false })
 
 			body := `{"stream":true,"store":false`
 			if tc.cacheKey != "" {
@@ -163,6 +174,11 @@ func TestSIWCInstructionsFold(t *testing.T) {
 		assert.Equal(t, gjson.GetBytes(first, "instructions").Raw, gjson.GetBytes(second, "instructions").Raw)
 		// The fold also gives both requests the same generated cache session.
 		assert.Equal(t, gjson.GetBytes(first, "prompt_cache_key").String(), gjson.GetBytes(second, "prompt_cache_key").String())
+		// The session seed reads the caller's messages, so turning the fold off keeps the key.
+		model_setting.GetGlobalSettings().SIWCInstructionsFold.Enabled = false
+		unfolded, err := ApplySIWCResponsesRequirements(siwcFoldTestInfo("forecast"), []byte(prefix+`{"role":"user","content":"seg 1"}]}`))
+		require.NoError(t, err)
+		assert.Equal(t, gjson.GetBytes(first, "prompt_cache_key").String(), gjson.GetBytes(unfolded, "prompt_cache_key").String())
 	})
 
 	t.Run("non-SIWC body is untouched", func(t *testing.T) {

@@ -1,6 +1,8 @@
 package relay
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -83,6 +85,7 @@ func PrepareResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, req *d
 	if err != nil {
 		return nil, nil, nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 	}
+	startSIWCPrefixPrewarm(c, info, adaptor, jsonData)
 	jsonData, err = service.ApplyPromptCacheAutoBreakpoints(info, jsonData)
 	if err != nil {
 		return nil, nil, nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
@@ -93,4 +96,39 @@ func PrepareResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, req *d
 		return nil, nil, nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 	}
 	return adaptor, body, closer, nil
+}
+
+// startSIWCPrefixPrewarm sends the background prewarm the planner picks for a
+// final SIWC body, if any, to the real request's URL with its headers,
+// credential and proxy. The real request is neither changed nor delayed.
+func startSIWCPrefixPrewarm(c *gin.Context, info *relaycommon.RelayInfo, adaptor relaychannel.Adaptor, body []byte) {
+	prewarm := service.PlanSIWCPrefixPrewarm(info, body)
+	if prewarm == nil {
+		return
+	}
+	// Headers are resolved now: the gin context is recycled once the request ends.
+	url, err := adaptor.GetRequestURL(info)
+	var template *http.Request
+	if err == nil {
+		template, err = http.NewRequest(http.MethodPost, url, nil)
+	}
+	if err == nil {
+		err = adaptor.SetupRequestHeader(c, &template.Header, info)
+	}
+	if err == nil {
+		err = relaychannel.ApplyHeaderOverride(info, c, template)
+	}
+	var client *http.Client
+	if err == nil {
+		client, err = service.GetHttpClientWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
+	}
+	prewarm.Start(func(ctx context.Context, body []byte) (*http.Response, error) {
+		if err != nil {
+			return nil, err
+		}
+		request := template.Clone(ctx)
+		request.Body = io.NopCloser(bytes.NewReader(body))
+		request.ContentLength = int64(len(body))
+		return client.Do(request)
+	})
 }

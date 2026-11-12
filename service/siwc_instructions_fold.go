@@ -20,7 +20,8 @@ import (
 // Anything it cannot fold safely leaves the body unchanged.
 func foldSIWCLeadingInputIntoInstructions(info *relaycommon.RelayInfo, body []byte) ([]byte, error) {
 	setting := model_setting.GetGlobalSettings().SIWCInstructionsFold
-	if !setting.Enabled {
+	// Prefix prewarm needs the input untouched; the fold stays only as its rollback.
+	if !setting.Enabled || model_setting.GetGlobalSettings().SIWCPrefixPrewarm.Enabled {
 		return body, nil
 	}
 	request := gjson.ParseBytes(body)

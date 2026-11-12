@@ -78,6 +78,7 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	}
 
 	usageDto := usage.(*dto.Usage)
+	service.ObserveSIWCPrefixUsage(c, info, usageDto)
 	if info.RelayMode == relayconstant.RelayModeResponsesCompact {
 		service.PostTextConsumeQuota(c, info, usageDto, nil)
 		return nil

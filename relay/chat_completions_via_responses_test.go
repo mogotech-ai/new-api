@@ -2,12 +2,16 @@ package relay
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -25,6 +29,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"golang.org/x/net/http/httpguts"
 )
 
@@ -120,9 +125,9 @@ func TestSIWCRequestsSendPromptCacheSession(t *testing.T) {
 					adaptor.Init(info)
 					_, apiErr := textRequestViaResponses(c, info, adaptor, &request)
 					require.Nil(t, apiErr)
-					// The caller-marked prefix before the last user message is folded into instructions.
-					assert.Equal(t, "## DEVELOPER\nsystem rules\n\n## DEVELOPER\ndeveloper rules", gjson.GetBytes(transport.body, "instructions").String())
-					assert.JSONEq(t, `[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]`, gjson.GetBytes(transport.body, "input").Raw)
+					// Caller breakpoints are dropped; every message stays in input.
+					assert.Empty(t, gjson.GetBytes(transport.body, "instructions").String())
+					assert.JSONEq(t, `[{"role":"developer","content":[{"type":"input_text","text":"system rules"}]},{"role":"developer","content":[{"type":"input_text","text":"developer rules"}]},{"role":"user","content":[{"type":"input_text","text":"hello"}]}]`, gjson.GetBytes(transport.body, "input").Raw)
 				} else {
 					request := &dto.OpenAIResponsesRequest{Model: "gpt-test", Input: []byte(`[{"role":"developer","content":[{"type":"input_text","text":"rules","prompt_cache_breakpoint":{"mode":"explicit"}}]},{"role":"user","content":[{"type":"input_text","text":"hello","prompt_cache_breakpoint":{"mode":"explicit"}}]}]`),
 						Instructions: json.RawMessage(`[{"type":"input_text","text":"prefix","prompt_cache_breakpoint":{"mode":"explicit"}}]`)}
@@ -165,6 +170,11 @@ func TestSIWCRequestsSendPromptCacheSession(t *testing.T) {
 }
 
 func TestSIWCChatFoldsForecastPrefixIntoInstructions(t *testing.T) {
+	previousSettings := *model_setting.GetGlobalSettings()
+	t.Cleanup(func() { *model_setting.GetGlobalSettings() = previousSettings })
+	// The fold is the rollback path: off by default and never together with prefix prewarm.
+	model_setting.GetGlobalSettings().SIWCInstructionsFold.Enabled = true
+	model_setting.GetGlobalSettings().SIWCPrefixPrewarm.Enabled = false
 	if service.GetHttpClient() == nil {
 		service.InitHttpClient()
 	}
@@ -208,6 +218,192 @@ func TestSIWCChatFoldsForecastPrefixIntoInstructions(t *testing.T) {
 	assert.Equal(t, []string{"user", "assistant", "user"}, []string{input[0].Get("role").String(), input[1].Get("role").String(), input[2].Get("role").String()})
 	assert.Contains(t, input[0].Raw, "segment 1")
 	assert.Contains(t, input[2].Raw, "segment 2")
+}
+
+// TestSIWCPrefixPrewarm drives forecast-shaped traffic through both SIWC
+// paths against an upstream that records real and prewarm requests.
+func TestSIWCPrefixPrewarm(t *testing.T) {
+	if service.GetHttpClient() == nil {
+		service.InitHttpClient()
+	}
+	previousSettings := *model_setting.GetGlobalSettings()
+	t.Cleanup(func() { *model_setting.GetGlobalSettings() = previousSettings })
+	model_setting.GetGlobalSettings().SIWCPrefixPrewarm = model_setting.SIWCPrefixPrewarm{Enabled: true, MinPriorSightings: 2, MinPrefixTokens: 1000, MinGainTokens: 500,
+		WarmTTLSeconds: 3600, MaxConcurrent: 4, MaxAttempts: 2, MaxPerScopeMinute: 30, MaxOutputTokens: 16, TimeoutSeconds: 10, MaxEntries: 1000}
+	credential, err := common.Marshal(common.SIWCCredential{ClientID: "test-client", AccessToken: "test-access", RefreshToken: "test-refresh", ExpiresAt: 1})
+	require.NoError(t, err)
+
+	type captured struct {
+		body   []byte
+		header http.Header
+	}
+	var mu sync.Mutex
+	var reals []captured
+	prewarms := make(chan captured, 16)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	closedEarly := make(chan bool, 16)
+	var reportedCached atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if gjson.GetBytes(body, "max_output_tokens").Int() == 16 {
+			prewarms <- captured{body, r.Header.Clone()}
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.created\"}\n\ndata: {\"type\":\"response.output_item.added\"}\n\n")
+			w.(http.Flusher).Flush()
+			select {
+			case <-r.Context().Done():
+				closedEarly <- true
+			case <-time.After(5 * time.Second):
+				closedEarly <- false
+			}
+			return
+		}
+		mu.Lock()
+		reals = append(reals, captured{body, r.Header.Clone()})
+		mu.Unlock()
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"type":"response.completed","response":{"id":"resp_test","model":"gpt-test","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],`+
+			fmt.Sprintf(`"usage":{"input_tokens":3000,"input_tokens_details":{"cached_tokens":%d},"output_tokens":1,"total_tokens":3001}}}`, reportedCached.Load()))
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) }) // runs first: unblock hanging prewarms
+
+	newContext := func(path string) *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, path, nil)
+		common.SetContextKey(c, constant.ContextKeyOriginalModel, "gpt-test")
+		common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+		common.SetContextKey(c, constant.ContextKeyChannelId, 17)
+		common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, server.URL)
+		common.SetContextKey(c, constant.ContextKeyChannelKey, string(credential))
+		return c
+	}
+	chat := func(userID int, dynamic string) (*relaycommon.RelayInfo, *dto.Usage, *relaytypes.NewAPIError) {
+		messages, _ := common.Marshal([]map[string]string{
+			{"role": "system", "content": "RULES"},
+			{"role": "user", "content": "PREGAME " + strings.Repeat("p", 4000)},
+			{"role": "assistant", "content": "Acknowledged."},
+			{"role": "user", "content": "SEGMENT 1 " + strings.Repeat("s", 4000)},
+			{"role": "assistant", "content": "Acknowledged."},
+			{"role": "user", "content": "DYNAMIC " + dynamic},
+		})
+		c := newContext("/v1/chat/completions")
+		var request dto.GeneralOpenAIRequest
+		if err := common.Unmarshal([]byte(`{"model":"gpt-test","messages":`+string(messages)+`}`), &request); err != nil {
+			return nil, nil, relaytypes.NewError(err, relaytypes.ErrorCodeInvalidRequest)
+		}
+		info := relaycommon.GenRelayInfoOpenAI(c, &request)
+		info.UserId = userID
+		info.InitChannelMeta(c)
+		adaptor := GetAdaptor(info.ApiType)
+		adaptor.Init(info)
+		usage, apiErr := textRequestViaResponses(c, info, adaptor, &request)
+		return info, usage, apiErr
+	}
+	nextPrewarm := func() captured {
+		select {
+		case prewarm := <-prewarms:
+			return prewarm
+		case <-time.After(5 * time.Second):
+			require.FailNow(t, "no prewarm reached upstream")
+			return captured{}
+		}
+	}
+
+	// Baseline real bodies with prewarm off; the planner keeps no state then.
+	model_setting.GetGlobalSettings().SIWCPrefixPrewarm.Enabled = false
+	for round := 1; round <= 3; round++ {
+		_, _, apiErr := chat(101, fmt.Sprint(round))
+		require.Nil(t, apiErr)
+	}
+	baseline := reals
+	reals = nil
+	model_setting.GetGlobalSettings().SIWCPrefixPrewarm.Enabled = true
+	for round := 1; round <= 3; round++ {
+		// Round 3 returns while its prewarm is still hanging upstream.
+		_, usage, apiErr := chat(101, fmt.Sprint(round))
+		require.Nil(t, apiErr)
+		assert.Equal(t, 3000, usage.InputTokens, "upstream usage reaches the cache feedback")
+	}
+	prewarm := nextPrewarm()
+	require.Len(t, reals, 3)
+	for i := range reals {
+		assert.Equal(t, string(baseline[i].body), string(reals[i].body), "real body %d is unchanged", i+1)
+	}
+	last := reals[2]
+	items := gjson.GetBytes(last.body, "input").Array()
+	require.Len(t, items, 5) // the system message is the instructions
+	assert.Equal(t, "["+items[0].Raw+","+items[1].Raw+","+items[2].Raw+"]", gjson.GetBytes(prewarm.body, "input").Raw)
+	assert.True(t, gjson.GetBytes(prewarm.body, "stream").Bool())
+	assert.NotEmpty(t, gjson.GetBytes(last.body, "prompt_cache_key").String())
+	rest := func(body []byte) string {
+		body, err := sjson.DeleteBytes(body, "input")
+		require.NoError(t, err)
+		body, err = sjson.DeleteBytes(body, "max_output_tokens")
+		require.NoError(t, err)
+		return string(body)
+	}
+	assert.JSONEq(t, rest(last.body), rest(prewarm.body), "same instructions, prompt_cache_key and options")
+	for _, name := range []string{"session_id", "session-id", "thread-id", "Authorization"} {
+		assert.NotEmpty(t, last.header.Get(name), name)
+		assert.Equal(t, last.header.Get(name), prewarm.header.Get(name), name)
+	}
+
+	// Concurrent requests while the prewarm hangs coalesce on it.
+	var wg sync.WaitGroup
+	for round := 4; round < 8; round++ {
+		wg.Go(func() {
+			_, _, apiErr := chat(101, fmt.Sprint(round))
+			assert.Nil(t, apiErr)
+		})
+	}
+	wg.Wait()
+	assert.Empty(t, prewarms)
+	releaseOnce.Do(func() { close(release) })
+	assert.True(t, <-closedEarly, "the prewarm closes after the first output event")
+
+	// A real request that expected the warm prefix but missed it re-arms the prewarm.
+	reportedCached.Store(3000)
+	round := 8
+	require.Eventually(t, func() bool {
+		round++
+		info, _, apiErr := chat(101, fmt.Sprint(round))
+		return apiErr == nil && info.SIWCWarmPrefixTokens > 0
+	}, 5*time.Second, 10*time.Millisecond)
+	reportedCached.Store(0)
+	_, _, apiErr := chat(101, "miss")
+	require.Nil(t, apiErr)
+	assert.Empty(t, prewarms)
+	_, _, apiErr = chat(101, "after miss")
+	require.Nil(t, apiErr)
+	nextPrewarm()
+
+	// Native /v1/responses on SIWC prewarms the same way.
+	input := `[{"role":"user","content":"PREGAME ` + strings.Repeat("q", 4000) + `"},{"role":"assistant","content":"Acknowledged."},{"role":"user","content":"SEGMENT ` + strings.Repeat("r", 4000) + `"},{"role":"assistant","content":"Acknowledged."},`
+	reals = nil
+	for round := 1; round <= 3; round++ {
+		c := newContext("/v1/responses")
+		request := &dto.OpenAIResponsesRequest{Model: "gpt-test", Instructions: json.RawMessage(`"RULES"`), Input: json.RawMessage(input + fmt.Sprintf(`{"role":"user","content":"DYNAMIC %d"}]`, round))}
+		info := relaycommon.GenRelayInfoResponses(c, request)
+		info.UserId = 202
+		adaptor, body, closer, apiErr := PrepareResponsesRequest(c, info, request)
+		require.Nil(t, apiErr)
+		response, err := adaptor.DoRequest(c, info, body)
+		require.NoError(t, err)
+		require.NoError(t, response.(*http.Response).Body.Close())
+		require.NoError(t, closer.Close())
+	}
+	prewarm = nextPrewarm()
+	require.Len(t, reals, 3)
+	items = gjson.GetBytes(reals[2].body, "input").Array()
+	assert.Equal(t, "["+items[0].Raw+","+items[1].Raw+","+items[2].Raw+"]", gjson.GetBytes(prewarm.body, "input").Raw)
+	assert.Equal(t, int64(16), gjson.GetBytes(prewarm.body, "max_output_tokens").Int())
+	assert.Equal(t, reals[2].header.Get("session_id"), prewarm.header.Get("session_id"))
 }
 
 func TestNativeChatWithoutBreakpointsPreservesRequestBytes(t *testing.T) {

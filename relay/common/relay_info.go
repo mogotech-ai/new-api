@@ -110,6 +110,11 @@ type RelayInfo struct {
 	PricingSource             string
 	PricingFallback           bool
 
+	// SIWCWarmPrefixKey/Tokens name the warm prefix index entry this SIWC
+	// request is expected to hit; usage feedback marks it cold on a miss.
+	SIWCWarmPrefixKey    [32]byte
+	SIWCWarmPrefixTokens int
+
 	RequestURLPath     string
 	RequestHeaders     map[string]string
 	SIWCSessionID      string

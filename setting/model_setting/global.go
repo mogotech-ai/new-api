@@ -81,6 +81,23 @@ type SIWCInstructionsFoldRule struct {
 	KeepLast               int      `json:"keep_last,omitempty"`                 // keep_last: trailing input items left in input (>=1).
 }
 
+// SIWCPrefixPrewarm writes the SIWC prompt cache at stable message boundaries
+// in the middle of input with a separate truncated request, because SIWC only
+// writes at the end of instructions and of the last user message.
+type SIWCPrefixPrewarm struct {
+	Enabled           bool `json:"enabled"`
+	MinPriorSightings int  `json:"min_prior_sightings"` // Earlier requests that must contain a boundary before it is prewarmed.
+	MinPrefixTokens   int  `json:"min_prefix_tokens"`
+	MinGainTokens     int  `json:"min_gain_tokens"`  // Over the longest prefix already warm.
+	WarmTTLSeconds    int  `json:"warm_ttl_seconds"` // Idle TTL, refreshed by each real request expected to hit the prefix.
+	MaxConcurrent     int  `json:"max_concurrent"`
+	MaxAttempts       int  `json:"max_attempts"`         // Per boundary per 10 minutes.
+	MaxPerScopeMinute int  `json:"max_per_scope_minute"` // Per user+token+model+channel.
+	MaxOutputTokens   int  `json:"max_output_tokens"`
+	TimeoutSeconds    int  `json:"timeout_seconds"`
+	MaxEntries        int  `json:"max_entries"` // In-memory prefix index LRU bound.
+}
+
 type GlobalSettings struct {
 	PassThroughRequestEnabled bool     `json:"pass_through_request_enabled"`
 	ThinkingModelBlacklist    []string `json:"thinking_model_blacklist"`
@@ -90,6 +107,7 @@ type GlobalSettings struct {
 	ChatCompletionsToResponsesPolicy ChatCompletionsToResponsesPolicy `json:"chat_completions_to_responses_policy"`
 	PromptCacheAutoBreakpoint        PromptCacheAutoBreakpoint        `json:"prompt_cache_auto_breakpoint"`
 	SIWCInstructionsFold             SIWCInstructionsFold             `json:"siwc_instructions_fold"`
+	SIWCPrefixPrewarm                SIWCPrefixPrewarm                `json:"siwc_prefix_prewarm"`
 }
 
 // 默认配置
@@ -115,13 +133,27 @@ var defaultOpenaiSettings = GlobalSettings{
 		// gpt-5.6 and later minors, gpt-6 to gpt-19; two-digit majors stop at 19 so Azure-style gpt-35-turbo stays out.
 		ModelPatterns: []string{`^gpt-5\.([6-9]|\d{2,})(-|$)`, `^gpt-([6-9]|1\d)(\.\d+)?(-|$)`},
 	},
+	// Superseded by SIWCPrefixPrewarm, which never runs together with it; kept for rollback.
 	SIWCInstructionsFold: SIWCInstructionsFold{
-		Enabled:                  true,
+		Enabled:                  false,
 		HonorExplicitBreakpoints: true,
 		Rules: []SIWCInstructionsFoldRule{
 			{Name: "forecast", TokenNames: []string{"forecast"}, Boundary: "first_assistant"},
 			{Name: "tape-live-c15", TokenNames: []string{"tape-dev"}, PromptCacheKeyPatterns: []string{`:c15_forecast$`}, Boundary: "keep_last", KeepLast: 2},
 		},
+	},
+	SIWCPrefixPrewarm: SIWCPrefixPrewarm{
+		Enabled:           true,
+		MinPriorSightings: 2,
+		MinPrefixTokens:   4096,
+		MinGainTokens:     2048,
+		WarmTTLSeconds:    3600,
+		MaxConcurrent:     4,
+		MaxAttempts:       2,
+		MaxPerScopeMinute: 30,
+		MaxOutputTokens:   16,
+		TimeoutSeconds:    60,
+		MaxEntries:        20000,
 	},
 }
 

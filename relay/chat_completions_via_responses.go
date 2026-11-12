@@ -122,7 +122,9 @@ func textRequestViaResponses(c *gin.Context, info *relaycommon.RelayInfo, adapto
 	if !ok {
 		return nil, types.NewError(fmt.Errorf("expected OpenAI responses request, got %T", result.Value), types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 	}
-	return relayResponsesRequest(c, info, adaptor, responsesReq, paramOverrideApplied)
+	usage, apiErr := relayResponsesRequest(c, info, adaptor, responsesReq, paramOverrideApplied)
+	service.ObserveSIWCPrefixUsage(c, info, usage)
+	return usage, apiErr
 }
 
 func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor channel.Adaptor, responsesReq *dto.OpenAIResponsesRequest, paramOverrideApplied bool) (*dto.Usage, *types.NewAPIError) {
@@ -178,6 +180,7 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 	}
+	startSIWCPrefixPrewarm(c, info, adaptor, jsonData)
 	jsonData, err = service.ApplyPromptCacheAutoBreakpoints(info, jsonData)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
