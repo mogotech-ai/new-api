@@ -108,15 +108,26 @@ func TestSIWCRequestsSendPromptCacheSession(t *testing.T) {
 				}
 				var info *relaycommon.RelayInfo
 				if path == "/v1/chat/completions" {
-					request := &dto.GeneralOpenAIRequest{Model: "gpt-test", Messages: []dto.Message{{Role: "user", Content: "hello"}}}
-					info = relaycommon.GenRelayInfoOpenAI(c, request)
+					var request dto.GeneralOpenAIRequest
+					require.NoError(t, common.Unmarshal([]byte(`{"model":"gpt-test","messages":[
+						{"role":"system","content":[{"type":"text","text":"system rules","prompt_cache_breakpoint":{"mode":"explicit"}}]},
+						{"role":"developer","content":[{"type":"text","text":"developer rules","prompt_cache_breakpoint":{"mode":"explicit"}}]},
+						{"role":"user","content":[{"type":"text","text":"hello","prompt_cache_breakpoint":{"mode":"explicit"}}]}
+					]}`), &request))
+					info = relaycommon.GenRelayInfoOpenAI(c, &request)
 					info.InitChannelMeta(c)
 					adaptor := GetAdaptor(info.ApiType)
 					adaptor.Init(info)
-					_, apiErr := textRequestViaResponses(c, info, adaptor, request)
+					_, apiErr := textRequestViaResponses(c, info, adaptor, &request)
 					require.Nil(t, apiErr)
+					assert.JSONEq(t, `[
+						{"role":"developer","content":[{"type":"input_text","text":"system rules"}]},
+						{"role":"developer","content":[{"type":"input_text","text":"developer rules"}]},
+						{"role":"user","content":[{"type":"input_text","text":"hello"}]}
+					]`, gjson.GetBytes(transport.body, "input").Raw)
 				} else {
-					request := &dto.OpenAIResponsesRequest{Model: "gpt-test", Input: []byte(`"hello"`)}
+					request := &dto.OpenAIResponsesRequest{Model: "gpt-test", Input: []byte(`[{"role":"developer","content":[{"type":"input_text","text":"rules","prompt_cache_breakpoint":{"mode":"explicit"}}]},{"role":"user","content":[{"type":"input_text","text":"hello","prompt_cache_breakpoint":{"mode":"explicit"}}]}]`),
+						Instructions: json.RawMessage(`[{"type":"input_text","text":"prefix","prompt_cache_breakpoint":{"mode":"explicit"}}]`)}
 					info = relaycommon.GenRelayInfoResponses(c, request)
 					adaptor, body, closer, apiErr := PrepareResponsesRequest(c, info, request)
 					require.Nil(t, apiErr)
@@ -146,12 +157,83 @@ func TestSIWCRequestsSendPromptCacheSession(t *testing.T) {
 				assert.Equal(t, wantHeader, transport.sessionID)
 				assert.True(t, httpguts.ValidHeaderFieldValue(transport.sessionID))
 				assert.Equal(t, wantKey, gjson.GetBytes(transport.body, "prompt_cache_key").String())
+				assert.NotContains(t, string(transport.body), "prompt_cache_breakpoint")
 				assert.NotContains(t, string(transport.body), "{client_header:")
 				assert.NotContains(t, string(transport.body), "{api_key}")
 				assert.NotContains(t, string(transport.body), "test-access")
 			})
 		}
 	}
+}
+
+func TestNativeChatWithoutBreakpointsPreservesRequestBytes(t *testing.T) {
+	if service.GetHttpClient() == nil {
+		service.InitHttpClient()
+	}
+	client := service.GetHttpClient()
+	previousTransport := client.Transport
+	previousSettings := *model_setting.GetGlobalSettings()
+	t.Cleanup(func() {
+		client.Transport = previousTransport
+		*model_setting.GetGlobalSettings() = previousSettings
+	})
+	model_setting.GetGlobalSettings().ChatCompletionsToResponsesPolicy.Enabled = false
+	const raw = `{
+		"model": "gpt-test", "messages": [
+			{"role":"system","content":"rules"},
+			{"role":"user","content":[{"type":"text","text":"question"}]},
+			{"role":"assistant","content":[{"type":"text","text":"answer"}]},
+			{"role":"tool","tool_call_id":"call_1","content":[{"type":"text","text":"result"}]}
+		]
+	}`
+	const encoded = `{"model":"gpt-test","messages":[{"role":"system","content":"rules"},{"role":"user","content":[{"text":"question","type":"text"}]},{"role":"assistant","content":[{"text":"answer","type":"text"}]},{"role":"tool","content":[{"text":"result","type":"text"}],"tool_call_id":"call_1"}]}`
+	for _, mode := range []string{"native", "channel passthrough", "global passthrough"} {
+		t.Run(mode, func(t *testing.T) {
+			model_setting.GetGlobalSettings().PassThroughRequestEnabled = mode == "global passthrough"
+			transport := &policyTestTransport{}
+			client.Transport = transport
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(raw))
+			common.SetContextKey(c, constant.ContextKeyOriginalModel, "gpt-test")
+			common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, "https://openai.invalid")
+			common.SetContextKey(c, constant.ContextKeyChannelKey, "test-key")
+			common.SetContextKey(c, constant.ContextKeyChannelSetting, dto.ChannelSettings{PassThroughBodyEnabled: mode == "channel passthrough"})
+			var request dto.GeneralOpenAIRequest
+			require.NoError(t, common.Unmarshal([]byte(raw), &request))
+			info := relaycommon.GenRelayInfoOpenAI(c, &request)
+			require.NotNil(t, TextHelper(c, info)) // The transport captures the request, then returns a fixture error.
+			assert.Equal(t, 1, transport.calls)
+			assert.Equal(t, "/v1/chat/completions", transport.path)
+			want := raw
+			if mode == "native" {
+				want = encoded
+			}
+			assert.Equal(t, want, string(transport.body))
+		})
+	}
+}
+
+func TestPrepareResponsesRequestPreservesPromptCacheBreakpoints(t *testing.T) {
+	const breakpoint = `{"mode":"explicit","z":9007199254740993,"a":[false,null,"future"]}`
+	const input = `[{"role":"user","content":[{"type":"input_text","text":"hello","prompt_cache_breakpoint":` + breakpoint + `}]}]`
+	var request dto.OpenAIResponsesRequest
+	require.NoError(t, common.Unmarshal([]byte(`{"model":"gpt-test","input":`+input+`}`), &request))
+	assert.Equal(t, input, string(request.Input))
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	common.SetContextKey(c, constant.ContextKeyOriginalModel, "gpt-test")
+	common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+	common.SetContextKey(c, constant.ContextKeyChannelKey, "test-key")
+	info := relaycommon.GenRelayInfoResponses(c, &request)
+	_, body, closer, apiErr := PrepareResponsesRequest(c, info, &request)
+	require.Nil(t, apiErr)
+	defer closer.Close()
+	encoded, err := io.ReadAll(body)
+	require.NoError(t, err)
+	assert.False(t, info.IsSIWC)
+	assert.Equal(t, input, gjson.GetBytes(encoded, "input").Raw)
+	assert.Equal(t, breakpoint, gjson.GetBytes(encoded, "input.0.content.0.prompt_cache_breakpoint").Raw)
 }
 
 func TestChatResponsesPolicyMatchesMappedModel(t *testing.T) {

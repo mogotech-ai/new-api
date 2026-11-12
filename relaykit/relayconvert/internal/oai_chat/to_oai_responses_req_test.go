@@ -126,7 +126,7 @@ func TestChatCompletionsRequestToResponsesRequestOmitsCacheControl(t *testing.T)
 	require.NoError(t, kitutil.Unmarshal([]byte(`{
 		"model":"gpt-test",
 		"messages":[{"role":"user","content":[
-			{"type":"text","text":"Shared facts","cache_control":{"type":"ephemeral"}},
+			{"type":"text","text":"Shared facts","cache_control":{"type":"ephemeral"},"prompt_cache_breakpoint":{"mode":"explicit"}},
 			{"type":"image_url","image_url":{"url":"https://example.test/a.png"},"cache_control":{"type":"ephemeral","ttl":"1h"}}
 		]}],
 		"tools":[{"type":"function","cache_control":{"type":"ephemeral"},"function":{
@@ -139,12 +139,46 @@ func TestChatCompletionsRequestToResponsesRequestOmitsCacheControl(t *testing.T)
 	encoded, err := kitutil.Marshal(got)
 	require.NoError(t, err)
 	assert.JSONEq(t, `[{"role":"user","content":[
-		{"type":"input_text","text":"Shared facts"},
+		{"type":"input_text","text":"Shared facts","prompt_cache_breakpoint":{"mode":"explicit"}},
 		{"type":"input_image","image_url":"https://example.test/a.png","detail":"auto"}
 	]}]`, ojson.GetBytes(encoded, "input").Raw)
 	assert.NotContains(t, string(encoded), "cache_control")
-	assert.NotContains(t, string(encoded), "prompt_cache_breakpoint")
+	assert.Equal(t, `{"mode":"explicit"}`, ojson.GetBytes(encoded, "input.0.content.0.prompt_cache_breakpoint").Raw)
 	assert.Equal(t, `{"type":"object","properties":{"z":{"type":"string"},"a":{"type":"string"}}}`, ojson.GetBytes(encoded, "tools.0.parameters").Raw)
+}
+
+func TestChatCompletionsRequestToResponsesRequestPromptCacheBreakpoints(t *testing.T) {
+	const breakpoint = `{"mode":"explicit","extra":[false,null,"opaque"]}`
+	var request dto.GeneralOpenAIRequest
+	require.NoError(t, kitutil.Unmarshal([]byte(`{
+		"model":"gpt-test",
+		"messages":[
+			{"role":"system","content":"  first rules  "},
+			{"role":"user","content":[{"type":"text","text":"question","prompt_cache_breakpoint":`+breakpoint+`}]},
+			{"role":"system","content":[{"type":"text","text":"  prefix  "},{"type":"text","text":"","prompt_cache_breakpoint":`+breakpoint+`}]},
+			{"role":"assistant","content":[{"type":"text","text":"answer","prompt_cache_breakpoint":`+breakpoint+`}]},
+			{"role":"developer","content":[{"type":"text","text":"more rules","prompt_cache_breakpoint":null},{"type":"text","text":"suffix"}]},
+			{"role":"system","content":[{"type":"text","text":"  last rules  "},{"type":"text","text":"  "},{"type":"text","text":"next line"}]},
+			{"role":"developer","content":[{"type":"text","text":"developer rules"}]},
+			{"role":"user","content":[{"type":"text","text":"continue"}]}
+		]
+	}`), &request))
+	got, err := ChatCompletionsRequestToResponsesRequest(context.Background(), &request)
+	require.NoError(t, err)
+	assert.Equal(t, `"first rules\n\nlast rules  \nnext line\n\ndeveloper rules"`, string(got.Instructions))
+	assert.JSONEq(t, `[
+		{"role":"user","content":[{"type":"input_text","text":"question","prompt_cache_breakpoint":`+breakpoint+`}]},
+		{"role":"developer","content":[{"type":"input_text","text":"  prefix  "},{"type":"input_text","text":"","prompt_cache_breakpoint":`+breakpoint+`}]},
+		{"role":"assistant","content":[{"type":"output_text","text":"answer","prompt_cache_breakpoint":`+breakpoint+`}]},
+		{"role":"developer","content":[{"type":"input_text","text":"more rules","prompt_cache_breakpoint":null},{"type":"input_text","text":"suffix"}]},
+		{"role":"user","content":[{"type":"input_text","text":"continue"}]}
+	]`, string(got.Input))
+	for _, path := range []string{"0.content.0", "1.content.1", "2.content.0"} {
+		assert.JSONEq(t, breakpoint, ojson.GetBytes(got.Input, path+".prompt_cache_breakpoint").Raw)
+	}
+	encoded, err := kitutil.Marshal(request.Messages[1].ParseContent())
+	require.NoError(t, err)
+	assert.JSONEq(t, breakpoint, ojson.GetBytes(encoded, "0.prompt_cache_breakpoint").Raw)
 }
 
 func TestChatCompletionsRequestToResponsesRequestPreservesQwenThinkingBudget(t *testing.T) {

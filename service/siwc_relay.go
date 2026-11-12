@@ -40,6 +40,35 @@ func ApplySIWCResponsesRequirements(info *relaycommon.RelayInfo, body []byte) ([
 			return nil, err
 		}
 	}
+	// SIWC also rejects explicit cache breakpoints on content parts.
+	request := gjson.ParseBytes(body)
+	var breakpointPaths []string
+	if instructions := request.Get("instructions"); instructions.IsArray() {
+		for i, part := range instructions.Array() {
+			if part.Get("prompt_cache_breakpoint").Exists() {
+				breakpointPaths = append(breakpointPaths, fmt.Sprintf("instructions.%d.prompt_cache_breakpoint", i))
+			}
+		}
+	}
+	for i, item := range request.Get("input").Array() {
+		content := item.Get("content")
+		if !content.IsArray() {
+			continue
+		}
+		for j, part := range content.Array() {
+			if part.Get("prompt_cache_breakpoint").Exists() {
+				breakpointPaths = append(breakpointPaths, fmt.Sprintf("input.%d.content.%d.prompt_cache_breakpoint", i, j))
+			}
+		}
+	}
+	for _, path := range breakpointPaths {
+		for gjson.GetBytes(body, path).Exists() {
+			body, err = sjson.DeleteBytes(body, path)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
 	sessionID := resolveSIWCSessionID(info, body)
 	cacheKey := gjson.GetBytes(body, "prompt_cache_key")
 	if !cacheKey.Exists() {

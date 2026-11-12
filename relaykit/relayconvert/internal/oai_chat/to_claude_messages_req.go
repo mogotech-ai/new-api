@@ -1,11 +1,13 @@
 package oaichat
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"context"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/internal/convdiag"
@@ -234,6 +236,27 @@ func OpenAIChatRequestToClaudeMessages(c context.Context, info convmeta.Meta, te
 			Role: message.Role,
 		}
 		if message.Role == "tool" {
+			if !message.IsStringContent() {
+				raw, err := kitutil.Marshal(message.Content)
+				if err != nil {
+					return nil, fmt.Errorf("marshal tool result content: %w", err)
+				}
+				if content := ojson.ParseBytes(raw); content.IsArray() {
+					for i, part := range content.Array() {
+						if !part.Get("prompt_cache_breakpoint").Exists() {
+							continue
+						}
+						path := fmt.Sprintf("%d.prompt_cache_breakpoint", i)
+						for ojson.GetBytes(raw, path).Exists() {
+							raw, err = ojson.DeleteBytes(raw, path)
+							if err != nil {
+								return nil, err
+							}
+						}
+						message.Content = json.RawMessage(raw)
+					}
+				}
+			}
 			if len(claudeMessages) > 0 && claudeMessages[len(claudeMessages)-1].Role == "user" {
 				lastClaudeMessage := claudeMessages[len(claudeMessages)-1]
 				if content, ok := lastClaudeMessage.Content.(string); ok {

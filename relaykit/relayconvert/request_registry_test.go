@@ -1051,6 +1051,72 @@ func TestConvertRequestResponsesToolCacheControlByTarget(t *testing.T) {
 	}
 }
 
+func TestConvertRequestOmitsPromptCacheBreakpointsForClaudeAndGemini(t *testing.T) {
+	for _, source := range []types.RelayFormat{types.RelayFormatOpenAI, types.RelayFormatOpenAIResponses} {
+		for _, target := range []types.RelayFormat{types.RelayFormatClaude, types.RelayFormatGemini} {
+			t.Run(string(source)+"/"+string(target), func(t *testing.T) {
+				var request any
+				if source == types.RelayFormatOpenAI {
+					request = &dto.GeneralOpenAIRequest{}
+					require.NoError(t, kitutil.Unmarshal([]byte(`{"model":"test","max_tokens":1024,"messages":[
+						{"role":"system","content":[{"type":"text","text":"rules","prompt_cache_breakpoint":{"mode":"explicit"}}]},
+						{"role":"user","content":[{"type":"text","text":"question","prompt_cache_breakpoint":{"mode":"explicit"}}]},
+						{"role":"assistant","content":[{"type":"text","text":"answer","prompt_cache_breakpoint":{"mode":"explicit"}}],"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},
+						{"role":"tool","tool_call_id":"call_1","content":[{"type":"text","text":"tool result","prompt_cache_breakpoint":{"mode":"explicit"}}]},
+						{"role":"user","content":[{"type":"text","text":"continue"}]}
+					]}`), request))
+				} else {
+					request = &dto.OpenAIResponsesRequest{}
+					require.NoError(t, kitutil.Unmarshal([]byte(`{"model":"test","max_output_tokens":1024,"input":[
+						{"role":"developer","content":[{"type":"input_text","text":"rules","prompt_cache_breakpoint":{"mode":"explicit"}}]},
+						{"role":"user","content":[{"type":"input_text","text":"question","prompt_cache_breakpoint":{"mode":"explicit"}}]},
+						{"role":"assistant","content":[{"type":"output_text","text":"answer","prompt_cache_breakpoint":{"mode":"explicit"}}]},
+						{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"},
+						{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_text","text":"tool result","prompt_cache_breakpoint":{"mode":"explicit"}}]},
+						{"role":"user","content":"continue"}
+					]}`), request))
+				}
+				original, err := kitutil.Marshal(request)
+				require.NoError(t, err)
+				converted, err := ConvertRequest(context.Background(), nil, target, request)
+				require.NoError(t, err)
+				body, err := kitutil.Marshal(converted.Value)
+				require.NoError(t, err)
+				assert.NotContains(t, string(body), "prompt_cache_breakpoint")
+				assert.Contains(t, string(body), `"tool result"`)
+				for _, text := range []string{"rules", "question", "answer", "continue"} {
+					assert.Contains(t, string(body), `"text":"`+text+`"`)
+				}
+				after, err := kitutil.Marshal(request)
+				require.NoError(t, err)
+				assert.Equal(t, original, after)
+			})
+		}
+	}
+}
+
+func TestChatToClaudeToolContentWithoutBreakpointsIsUnchanged(t *testing.T) {
+	for _, content := range []any{
+		map[string]any{"ok": true},
+		[]any{"result"},
+		[]dto.MediaContent{{Type: "text", Text: "result"}},
+	} {
+		original, err := kitutil.Marshal(content)
+		require.NoError(t, err)
+		t.Run(string(original), func(t *testing.T) {
+			request := dto.GeneralOpenAIRequest{Model: "test", MaxTokens: lo.ToPtr(uint(1024)), Messages: []dto.Message{
+				{Role: "user", Content: "question"},
+				{Role: "tool", ToolCallId: "call_1", Content: content},
+			}}
+			got, err := OpenAIChatRequestToClaudeMessages(context.Background(), nil, request)
+			require.NoError(t, err)
+			body, err := kitutil.Marshal(got)
+			require.NoError(t, err)
+			assert.Equal(t, string(original), ojson.GetBytes(body, "messages.0.content.1.content").Raw)
+		})
+	}
+}
+
 func TestConvertRequestOpenAIChatToGeminiAddsThoughtSignatureForAdvancedCustom(t *testing.T) {
 	assistantMessage := dto.Message{Role: "assistant", Content: ""}
 	assistantMessage.SetToolCalls([]dto.ToolCallRequest{

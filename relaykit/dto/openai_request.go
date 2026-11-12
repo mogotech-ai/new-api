@@ -513,12 +513,13 @@ type Message struct {
 }
 
 type MediaContent struct {
-	Type       string `json:"type"`
-	Text       string `json:"text,omitempty"`
-	ImageUrl   any    `json:"image_url,omitempty"`
-	InputAudio any    `json:"input_audio,omitempty"`
-	File       any    `json:"file,omitempty"`
-	VideoUrl   any    `json:"video_url,omitempty"`
+	Type                  string          `json:"type"`
+	Text                  string          `json:"text,omitempty"`
+	ImageUrl              any             `json:"image_url,omitempty"`
+	InputAudio            any             `json:"input_audio,omitempty"`
+	File                  any             `json:"file,omitempty"`
+	VideoUrl              any             `json:"video_url,omitempty"`
+	PromptCacheBreakpoint json.RawMessage `json:"prompt_cache_breakpoint,omitempty"`
 	// OpenRouter Params
 	CacheControl json.RawMessage `json:"cache_control,omitempty"`
 }
@@ -799,10 +800,17 @@ func (m *Message) ParseContent() []MediaContent {
 						cacheControl = encoded
 					}
 				}
+				var breakpoint json.RawMessage
+				if raw, present := contentItem["prompt_cache_breakpoint"]; present {
+					if encoded, err := kitutil.Marshal(raw); err == nil {
+						breakpoint = encoded
+					}
+				}
 				contentList = append(contentList, MediaContent{
-					Type:         ContentTypeText,
-					Text:         text,
-					CacheControl: cacheControl,
+					Type:                  ContentTypeText,
+					Text:                  text,
+					CacheControl:          cacheControl,
+					PromptCacheBreakpoint: breakpoint,
 				})
 			}
 

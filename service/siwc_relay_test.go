@@ -18,7 +18,7 @@ import (
 )
 
 func TestApplySIWCResponsesRequirementsNonSIWC(t *testing.T) {
-	body := []byte(`{"stream":false,"store":true,"input":"hello","prompt_cache_retention":"24h","prompt_cache_options":{"foo":true},"cache_salt":"tenant","prompt_cache_key":"caller-cache"}`)
+	body := []byte(`{"stream":false,"store":true,"input":[{"role":"user","content":[{"type":"input_text","text":"hello","prompt_cache_breakpoint":{ "mode": "explicit" }}]}],"instructions":[{"type":"input_text","text":"rules","prompt_cache_breakpoint":{"mode":"explicit"}}],"prompt_cache_retention":"24h","prompt_cache_options":{"foo":true},"cache_salt":"tenant","prompt_cache_key":"caller-cache"}`)
 	for _, info := range []*relaycommon.RelayInfo{nil, {}, {ChannelMeta: &relaycommon.ChannelMeta{}}} {
 		got, err := ApplySIWCResponsesRequirements(info, body)
 		require.NoError(t, err)
@@ -26,6 +26,54 @@ func TestApplySIWCResponsesRequirementsNonSIWC(t *testing.T) {
 		if info != nil {
 			assert.Empty(t, info.SIWCSessionID)
 		}
+	}
+}
+
+func TestApplySIWCResponsesRequirementsPromptCacheBreakpoints(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields, want string
+	}{
+		{
+			name: "input and instruction content parts",
+			fields: `"input":[
+				{"role":"developer","content":[{"type":"input_text","text":"rules","prompt_cache_breakpoint":{"mode":"explicit"}},{"type":"input_text","text":"more","prompt_cache_breakpoint":null}]},
+				{"role":"user","content":[{"type":"input_text","text":"hello","prompt_cache_breakpoint":false},{"type":"input_image","image_url":"image","prompt_cache_breakpoint":{}}]},
+				{"role":"assistant","content":[{"type":"output_text","text":"answer","prompt_cache_breakpoint":{"mode":"explicit"}}]},
+				{"role":"user","content":"continue"}
+			],"instructions":[{"type":"input_text","text":"prefix","prompt_cache_breakpoint":{"mode":"explicit"}},{"type":"input_text","text":"suffix","prompt_cache_breakpoint":null}]`,
+			want: `"input":[
+				{"role":"developer","content":[{"type":"input_text","text":"rules"},{"type":"input_text","text":"more"}]},
+				{"role":"user","content":[{"type":"input_text","text":"hello"},{"type":"input_image","image_url":"image"}]},
+				{"role":"assistant","content":[{"type":"output_text","text":"answer"}]},
+				{"role":"user","content":"continue"}
+			],"instructions":[{"type":"input_text","text":"prefix"},{"type":"input_text","text":"suffix"}]`,
+		},
+		{
+			name:   "duplicate breakpoint keys",
+			fields: `"input":[{"role":"developer","content":[{"type":"input_text","text":"rules","prompt_cache_breakpoint":null,"prompt_cache_breakpoint":{"mode":"explicit"}}]}],"instructions":[{"type":"input_text","text":"prefix","prompt_cache_breakpoint":{},"prompt_cache_breakpoint":false}]`,
+			want:   `"input":[{"role":"developer","content":[{"type":"input_text","text":"rules"}]}],"instructions":[{"type":"input_text","text":"prefix"}]`,
+		},
+		{
+			name:   "absent breakpoint preserves content bytes",
+			fields: `"input": [ { "content": [ { "text": "hello", "type": "input_text" } ], "role": "user" } ], "instructions": [ { "text": "rules", "type": "input_text" } ]`,
+		},
+		{
+			name:   "string instructions and content are unchanged",
+			fields: `"input":[{"role":"user","content":"prompt_cache_breakpoint"}],"instructions":"prompt_cache_breakpoint"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{IsSIWC: true}}
+			const prefix = `{"stream":true,"store":false,"prompt_cache_key":"caller-cache",`
+			body := []byte(prefix + tc.fields + `}`)
+			got, err := ApplySIWCResponsesRequirements(info, body)
+			require.NoError(t, err)
+			if tc.want == "" {
+				assert.Equal(t, body, got)
+			} else {
+				assert.JSONEq(t, prefix+tc.want+`}`, string(got))
+			}
+		})
 	}
 }
 

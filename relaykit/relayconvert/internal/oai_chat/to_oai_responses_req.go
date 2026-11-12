@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -132,7 +133,7 @@ func ChatCompletionsRequestToResponsesRequest(ctx context.Context, req *dto.Gene
 			continue
 		}
 
-		// Prefer mapping system/developer messages into `instructions`.
+		// A string instruction cannot carry content-part cache breakpoints.
 		if role == "system" || role == "developer" {
 			if msg.Content == nil {
 				continue
@@ -144,19 +145,24 @@ func ChatCompletionsRequestToResponsesRequest(ctx context.Context, req *dto.Gene
 				continue
 			}
 			parts := msg.ParseContent()
-			var sb strings.Builder
-			for _, part := range parts {
-				if part.Type == dto.ContentTypeText && strings.TrimSpace(part.Text) != "" {
-					if sb.Len() > 0 {
-						sb.WriteString("\n")
+			if !slices.ContainsFunc(parts, func(part dto.MediaContent) bool {
+				return part.Type == dto.ContentTypeText && len(part.PromptCacheBreakpoint) > 0
+			}) {
+				var sb strings.Builder
+				for _, part := range parts {
+					if part.Type == dto.ContentTypeText && strings.TrimSpace(part.Text) != "" {
+						if sb.Len() > 0 {
+							sb.WriteString("\n")
+						}
+						sb.WriteString(part.Text)
 					}
-					sb.WriteString(part.Text)
 				}
+				if s := strings.TrimSpace(sb.String()); s != "" {
+					instructionsParts = append(instructionsParts, s)
+				}
+				continue
 			}
-			if s := strings.TrimSpace(sb.String()); s != "" {
-				instructionsParts = append(instructionsParts, s)
-			}
-			continue
+			role = "developer"
 		}
 
 		item := map[string]any{
@@ -221,16 +227,23 @@ func ChatCompletionsRequestToResponsesRequest(ctx context.Context, req *dto.Gene
 		contentParts := make([]map[string]any, 0, len(parts))
 		// Responses input parts do not support Anthropic cache_control; omit it for OpenAI/SIWC compatibility.
 		for _, part := range parts {
+			if role == "developer" && part.Type != dto.ContentTypeText {
+				continue
+			}
 			switch part.Type {
 			case dto.ContentTypeText:
 				textType := "input_text"
 				if role == "assistant" {
 					textType = "output_text"
 				}
-				contentParts = append(contentParts, map[string]any{
+				textPart := map[string]any{
 					"type": textType,
 					"text": part.Text,
-				})
+				}
+				if len(part.PromptCacheBreakpoint) > 0 {
+					textPart["prompt_cache_breakpoint"] = part.PromptCacheBreakpoint
+				}
+				contentParts = append(contentParts, textPart)
 			case dto.ContentTypeImageURL:
 				var sourceDetail string
 				if img := part.GetImageMedia(); img != nil {
