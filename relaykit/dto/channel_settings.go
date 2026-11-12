@@ -141,6 +141,9 @@ type ChannelOtherSettings struct {
 	// rejection. Empty follows the default allow policy. Accepted values:
 	// "", "allow", "safe", "strict".
 	ToolLossPolicy string `json:"tool_loss_policy,omitempty"`
+	// DisablePromptCacheAutoBreakpoint opts this channel out of automatic
+	// prompt_cache_breakpoint injection on official OpenAI Responses requests.
+	DisablePromptCacheAutoBreakpoint bool `json:"disable_prompt_cache_auto_breakpoint,omitempty"`
 }
 
 func (s *ChannelOtherSettings) IsOpenRouterEnterprise() bool {

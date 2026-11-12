@@ -208,15 +208,19 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, header *http.Header, info *
 			return errors.New("SIWC authorization only supports the Responses endpoint")
 		}
 		if info.SIWCSessionID != "" {
-			hasSessionID := false
-			for key := range *header {
-				if strings.EqualFold(key, "session_id") {
-					hasSessionID = true
-					break
+			// Codex CLI also sends the hyphenated names; the ChatGPT backend routes its
+			// prompt cache by them and proxies may drop underscore headers.
+			for _, name := range []string{"session_id", "session-id", "thread-id"} {
+				exists := false
+				for key := range *header {
+					if strings.EqualFold(key, name) {
+						exists = true
+						break
+					}
 				}
-			}
-			if !hasSessionID {
-				header.Set("session_id", info.SIWCSessionID)
+				if !exists {
+					header.Set(name, info.SIWCSessionID)
+				}
 			}
 		}
 		header.Set("Accept", "text/event-stream")

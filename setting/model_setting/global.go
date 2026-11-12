@@ -35,6 +35,13 @@ func (p ChatCompletionsToResponsesPolicy) IsChannelEnabled(channelID int, channe
 	return false
 }
 
+// PromptCacheAutoBreakpoint controls automatic prompt_cache_breakpoint injection
+// for official OpenAI Responses requests.
+type PromptCacheAutoBreakpoint struct {
+	Enabled       bool     `json:"enabled"`
+	ModelPatterns []string `json:"model_patterns,omitempty"` // Matches upstream model names after channel mapping.
+}
+
 type GlobalSettings struct {
 	PassThroughRequestEnabled bool     `json:"pass_through_request_enabled"`
 	ThinkingModelBlacklist    []string `json:"thinking_model_blacklist"`
@@ -42,6 +49,7 @@ type GlobalSettings struct {
 	// family whitelist but whose names already end in an effort word.
 	EffortTailModelIDs               []string                         `json:"effort_tail_model_ids"`
 	ChatCompletionsToResponsesPolicy ChatCompletionsToResponsesPolicy `json:"chat_completions_to_responses_policy"`
+	PromptCacheAutoBreakpoint        PromptCacheAutoBreakpoint        `json:"prompt_cache_auto_breakpoint"`
 }
 
 // 默认配置
@@ -61,6 +69,11 @@ var defaultOpenaiSettings = GlobalSettings{
 	ChatCompletionsToResponsesPolicy: ChatCompletionsToResponsesPolicy{
 		Enabled:     false,
 		AllChannels: true,
+	},
+	PromptCacheAutoBreakpoint: PromptCacheAutoBreakpoint{
+		Enabled: true,
+		// gpt-5.6 and later minors, gpt-6 to gpt-19; two-digit majors stop at 19 so Azure-style gpt-35-turbo stays out.
+		ModelPatterns: []string{`^gpt-5\.([6-9]|\d{2,})(-|$)`, `^gpt-([6-9]|1\d)(\.\d+)?(-|$)`},
 	},
 }
 

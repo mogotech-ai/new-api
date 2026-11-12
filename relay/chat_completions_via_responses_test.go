@@ -287,6 +287,46 @@ func TestChatResponsesPolicyMatchesMappedModel(t *testing.T) {
 	}
 }
 
+func TestChatViaResponsesAddsPromptCacheAutoBreakpoints(t *testing.T) {
+	if service.GetHttpClient() == nil {
+		service.InitHttpClient()
+	}
+	client := service.GetHttpClient()
+	previousTransport := client.Transport
+	previousSettings := *model_setting.GetGlobalSettings()
+	t.Cleanup(func() {
+		client.Transport = previousTransport
+		*model_setting.GetGlobalSettings() = previousSettings
+	})
+	model_setting.GetGlobalSettings().PassThroughRequestEnabled = false
+	model_setting.GetGlobalSettings().ChatCompletionsToResponsesPolicy = model_setting.ChatCompletionsToResponsesPolicy{Enabled: true, AllChannels: true, ModelPatterns: []string{"^gpt-"}}
+	transport := &policyTestTransport{}
+	client.Transport = transport
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	common.SetContextKey(c, constant.ContextKeyOriginalModel, "gpt-6.1-sol")
+	common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+	common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, "https://openai.invalid")
+	common.SetContextKey(c, constant.ContextKeyChannelKey, "test-key")
+	info := &relaycommon.RelayInfo{OriginModelName: "gpt-6.1-sol", RelayMode: relayconstant.RelayModeChatCompletions, RelayFormat: relaytypes.RelayFormatOpenAI, RequestURLPath: "/v1/chat/completions"}
+	info.Request = &dto.GeneralOpenAIRequest{Model: "gpt-6.1-sol", Messages: []dto.Message{
+		{Role: "system", Content: "rules"},
+		{Role: "user", Content: "PREGAME"},
+		{Role: "assistant", Content: "Acknowledged."},
+		{Role: "user", Content: "dynamic"},
+	}}
+	require.NotNil(t, TextHelper(c, info)) // The transport captures the request, then returns a fixture error.
+	assert.False(t, info.IsSIWC)
+	assert.Equal(t, "/v1/responses", transport.path)
+	assert.Equal(t, "rules", gjson.GetBytes(transport.body, "instructions").String())
+	assert.JSONEq(t, `[
+		{"role":"user","content":[{"type":"input_text","text":"PREGAME","prompt_cache_breakpoint":{"mode":"explicit"}}]},
+		{"role":"assistant","content":"Acknowledged."},
+		{"role":"user","content":"dynamic"}
+	]`, gjson.GetBytes(transport.body, "input").Raw)
+	assert.False(t, gjson.GetBytes(transport.body, "prompt_cache_options").Exists())
+}
+
 func TestPrepareResponsesRequestRetainsConvertedAdaptor(t *testing.T) {
 	type capturedRequest struct {
 		path string

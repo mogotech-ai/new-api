@@ -29,6 +29,8 @@ func TestSetupRequestHeaderSIWCSession(t *testing.T) {
 		{name: "existing canonical header", siwc: true, sessionID: "generated-session", existingKey: "Session_id"},
 		{name: "existing lowercase header", siwc: true, sessionID: "generated-session", existingKey: "session_id"},
 		{name: "existing mixed case header", siwc: true, sessionID: "generated-session", existingKey: "SeSsIoN_Id"},
+		{name: "existing hyphen header", siwc: true, sessionID: "generated-session", existingKey: "Session-Id"},
+		{name: "existing lowercase thread header", siwc: true, sessionID: "generated-session", existingKey: "thread-id"},
 		{name: "non-SIWC", sessionID: "generated-session"},
 		{name: "empty session", siwc: true},
 	} {
@@ -44,14 +46,20 @@ func TestSetupRequestHeaderSIWCSession(t *testing.T) {
 				header[tc.existingKey] = []string{"existing-session"}
 			}
 			require.NoError(t, (&Adaptor{}).SetupRequestHeader(c, &header, info))
-			if tc.existingKey != "" {
-				assert.Equal(t, []string{"existing-session"}, header[tc.existingKey])
-				delete(header, tc.existingKey)
-				assert.Empty(t, header.Get("session_id"))
-			} else if tc.siwc {
-				assert.Equal(t, tc.sessionID, header.Get("session_id"))
-			} else {
-				assert.Empty(t, header.Get("session_id"))
+			// session_id (underscore) and session-id (hyphen) are distinct headers.
+			for _, name := range []string{"session_id", "session-id", "thread-id"} {
+				var want, got []string
+				if tc.existingKey != "" && strings.EqualFold(tc.existingKey, name) {
+					want = []string{"existing-session"}
+				} else if tc.siwc && tc.sessionID != "" {
+					want = []string{tc.sessionID}
+				}
+				for key, values := range header {
+					if strings.EqualFold(key, name) {
+						got = append(got, values...)
+					}
+				}
+				assert.Equal(t, want, got, name)
 			}
 		})
 	}
