@@ -987,3 +987,100 @@ func TestTextRequestViaResponsesChatWebSearchDropsUnsupportedSampling(t *testing
 	assert.JSONEq(t, `[{"type":"url_citation","url_citation":{"url":"https://nba.com/x","title":"NBA","start_index":0,"end_index":27}}]`,
 		string(response.Choices[0].Message.Annotations))
 }
+
+// Codex channels use ChatGPT accounts like SIWC: the real request gets the
+// session cache key and headers, and a repeated prefix is prewarmed over a
+// stream without the max_output_tokens field the Codex backend rejects.
+func TestCodexPrefixPrewarm(t *testing.T) {
+	if service.GetHttpClient() == nil {
+		service.InitHttpClient()
+	}
+	previousSettings := *model_setting.GetGlobalSettings()
+	t.Cleanup(func() { *model_setting.GetGlobalSettings() = previousSettings })
+	model_setting.GetGlobalSettings().SIWCPrefixPrewarm = model_setting.SIWCPrefixPrewarm{Enabled: true, MinPriorSightings: 2, MinPrefixTokens: 1000, MinGainTokens: 500,
+		WarmTTLSeconds: 3600, MaxConcurrent: 4, MaxAttempts: 2, MaxPerScopeMinute: 30, MaxOutputTokens: 16, TimeoutSeconds: 10, MaxEntries: 1000}
+
+	type captured struct {
+		path   string
+		body   []byte
+		header http.Header
+	}
+	var mu sync.Mutex
+	var reals []captured
+	prewarms := make(chan captured, 16)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		request := captured{r.URL.Path, body, r.Header.Clone()}
+		if gjson.GetBytes(body, "stream").Bool() {
+			prewarms <- request
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.created\"}\n\ndata: {\"type\":\"response.output_item.added\"}\n\n")
+			return
+		}
+		mu.Lock()
+		reals = append(reals, request)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_test","object":"response","model":"gpt-test","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":3000,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"total_tokens":3001}}`)
+	}))
+	t.Cleanup(server.Close)
+
+	chat := func(dynamic string) *relaytypes.NewAPIError {
+		messages, _ := common.Marshal([]map[string]string{
+			{"role": "system", "content": "RULES"},
+			{"role": "user", "content": "PREGAME " + strings.Repeat("p", 4000)},
+			{"role": "assistant", "content": "Acknowledged."},
+			{"role": "user", "content": "SEGMENT 1 " + strings.Repeat("s", 4000)},
+			{"role": "assistant", "content": "Acknowledged."},
+			{"role": "user", "content": "DYNAMIC " + dynamic},
+		})
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		common.SetContextKey(c, constant.ContextKeyOriginalModel, "gpt-test")
+		common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeCodex)
+		common.SetContextKey(c, constant.ContextKeyChannelId, 25)
+		common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, server.URL)
+		common.SetContextKey(c, constant.ContextKeyChannelKey, `{"access_token":"test-access","account_id":"test-account"}`)
+		var request dto.GeneralOpenAIRequest
+		if err := common.Unmarshal([]byte(`{"model":"gpt-test","messages":`+string(messages)+`}`), &request); err != nil {
+			return relaytypes.NewError(err, relaytypes.ErrorCodeInvalidRequest)
+		}
+		info := relaycommon.GenRelayInfoOpenAI(c, &request)
+		info.UserId = 404
+		info.InitChannelMeta(c)
+		adaptor := GetAdaptor(info.ApiType)
+		adaptor.Init(info)
+		_, apiErr := textRequestViaResponses(c, info, adaptor, &request)
+		return apiErr
+	}
+	for round := 1; round <= 3; round++ {
+		require.Nil(t, chat(fmt.Sprint(round)))
+	}
+	var prewarm captured
+	select {
+	case prewarm = <-prewarms:
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "no prewarm reached upstream")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, reals, 3)
+	last := reals[2]
+	assert.Equal(t, "/backend-api/codex/responses", last.path)
+	assert.Equal(t, last.path, prewarm.path)
+	key := gjson.GetBytes(last.body, "prompt_cache_key").String()
+	require.NotEmpty(t, key)
+	assert.Equal(t, key, gjson.GetBytes(reals[0].body, "prompt_cache_key").String(), "one key for the whole run")
+	for _, name := range []string{"session_id", "session-id", "thread-id"} {
+		assert.Equal(t, key, last.header.Get(name), name)
+		assert.Equal(t, key, prewarm.header.Get(name), name)
+	}
+	assert.Equal(t, "test-account", prewarm.header.Get("chatgpt-account-id"))
+	assert.Equal(t, "text/event-stream", prewarm.header.Get("Accept"))
+	assert.False(t, gjson.GetBytes(prewarm.body, "max_output_tokens").Exists())
+	assert.False(t, gjson.GetBytes(last.body, "stream").Bool(), "the real request keeps its own mode")
+	items := gjson.GetBytes(last.body, "input").Array()
+	require.Len(t, items, 5)
+	assert.Equal(t, "["+items[0].Raw+","+items[1].Raw+","+items[2].Raw+"]", gjson.GetBytes(prewarm.body, "input").Raw)
+}

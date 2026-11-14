@@ -98,6 +98,19 @@ type SIWCPrefixPrewarm struct {
 	MaxEntries        int  `json:"max_entries"` // In-memory prefix index LRU bound.
 }
 
+// SIWCSharedPrefixFold moves the start of a one-message request that it shares
+// with a recent request of the same caller into instructions, because SIWC and
+// Codex only write the prompt cache at the end of instructions and of the last
+// user message. It lifts that text to instruction level, so it is limited to
+// callers whose messages are their own data.
+type SIWCSharedPrefixFold struct {
+	Enabled         bool     `json:"enabled"`
+	TokenNames      []string `json:"token_names"`
+	MinPrefixTokens int      `json:"min_prefix_tokens"` // Instructions plus the folded text.
+	TTLSeconds      int      `json:"ttl_seconds"`       // How long a message and a learned cut are remembered.
+	MaxBytes        int      `json:"max_bytes"`         // Recent message texts kept in memory.
+}
+
 type GlobalSettings struct {
 	PassThroughRequestEnabled bool     `json:"pass_through_request_enabled"`
 	ThinkingModelBlacklist    []string `json:"thinking_model_blacklist"`
@@ -108,6 +121,7 @@ type GlobalSettings struct {
 	PromptCacheAutoBreakpoint        PromptCacheAutoBreakpoint        `json:"prompt_cache_auto_breakpoint"`
 	SIWCInstructionsFold             SIWCInstructionsFold             `json:"siwc_instructions_fold"`
 	SIWCPrefixPrewarm                SIWCPrefixPrewarm                `json:"siwc_prefix_prewarm"`
+	SIWCSharedPrefixFold             SIWCSharedPrefixFold             `json:"siwc_shared_prefix_fold"`
 }
 
 // 默认配置
@@ -154,6 +168,13 @@ var defaultOpenaiSettings = GlobalSettings{
 		MaxOutputTokens:   16,
 		TimeoutSeconds:    60,
 		MaxEntries:        20000,
+	},
+	SIWCSharedPrefixFold: SIWCSharedPrefixFold{
+		Enabled:         true,
+		TokenNames:      []string{"forecast"},
+		MinPrefixTokens: 4096,
+		TTLSeconds:      3600,
+		MaxBytes:        64 << 20,
 	},
 }
 

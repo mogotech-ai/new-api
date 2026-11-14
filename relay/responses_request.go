@@ -145,6 +145,7 @@ func startSIWCPrefixPrewarm(c *gin.Context, info *relaycommon.RelayInfo, adaptor
 		err = relaychannel.ApplyHeaderOverride(info, c, template)
 	}
 	if err == nil {
+		template.Header.Set("Accept", "text/event-stream") // the prewarm always streams, also for a non-stream Codex request
 		header, host = template.Header, template.Host
 		client, err = service.GetHttpClientWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
 	}

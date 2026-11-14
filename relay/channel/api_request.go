@@ -62,6 +62,28 @@ func SetupApiRequestHeader(info *common.RelayInfo, c *gin.Context, req *http.Hea
 	}
 }
 
+// SetSIWCSessionHeaders sends the session that SIWC and Codex requests derived
+// for their prompt cache key, unless the request already names one. Codex CLI
+// also sends the hyphenated names; the ChatGPT backend routes its prompt cache
+// by them and proxies may drop underscore headers.
+func SetSIWCSessionHeaders(header *http.Header, sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	for _, name := range []string{"session_id", "session-id", "thread-id"} {
+		exists := false
+		for key := range *header {
+			if strings.EqualFold(key, name) {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			header.Set(name, sessionID)
+		}
+	}
+}
+
 const clientHeaderPlaceholderPrefix = "{client_header:"
 
 const (

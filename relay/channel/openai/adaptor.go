@@ -207,22 +207,7 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, header *http.Header, info *
 		if info.RelayMode != relayconstant.RelayModeResponses {
 			return errors.New("SIWC authorization only supports the Responses endpoint")
 		}
-		if info.SIWCSessionID != "" {
-			// Codex CLI also sends the hyphenated names; the ChatGPT backend routes its
-			// prompt cache by them and proxies may drop underscore headers.
-			for _, name := range []string{"session_id", "session-id", "thread-id"} {
-				exists := false
-				for key := range *header {
-					if strings.EqualFold(key, name) {
-						exists = true
-						break
-					}
-				}
-				if !exists {
-					header.Set(name, info.SIWCSessionID)
-				}
-			}
-		}
+		channel.SetSIWCSessionHeaders(header, info.SIWCSessionID)
 		header.Set("Accept", "text/event-stream")
 	}
 	if info.ChannelType == constant.ChannelTypeAzure {

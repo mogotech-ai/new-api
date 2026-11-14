@@ -7,8 +7,10 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -16,8 +18,16 @@ import (
 )
 
 func ApplySIWCResponsesRequirements(info *relaycommon.RelayInfo, body []byte) ([]byte, error) {
-	if info == nil || info.ChannelMeta == nil || !info.IsSIWC {
+	if info == nil || info.ChannelMeta == nil {
 		return body, nil
+	}
+	if !info.IsSIWC {
+		if info.ChannelType != constant.ChannelTypeCodex || info.RelayMode != relayconstant.RelayModeResponses {
+			return body, nil
+		}
+		// Codex channels use ChatGPT accounts too and cache the same way; they get the
+		// same stable cache key, while the Codex adaptor handles the rest of the body.
+		return applySIWCSessionAndSharedPrefix(info, body)
 	}
 	body, err := sjson.SetBytes(body, "stream", true)
 	if err != nil {
@@ -75,6 +85,13 @@ func ApplySIWCResponsesRequirements(info *relaycommon.RelayInfo, body []byte) ([
 			}
 		}
 	}
+	return applySIWCSessionAndSharedPrefix(info, body)
+}
+
+// applySIWCSessionAndSharedPrefix sets the prompt cache key from the body before
+// the shared prefix fold, so every request of one run shares one key.
+func applySIWCSessionAndSharedPrefix(info *relaycommon.RelayInfo, body []byte) ([]byte, error) {
+	var err error
 	sessionID := resolveSIWCSessionID(info, body)
 	cacheKey := gjson.GetBytes(body, "prompt_cache_key")
 	if !cacheKey.Exists() {
@@ -87,7 +104,7 @@ func ApplySIWCResponsesRequirements(info *relaycommon.RelayInfo, body []byte) ([
 			info.TokenId, info.GetUpstreamModelName(), common.Sha256Raw([]byte(sessionID))[:6], common.Sha256Raw([]byte(cacheKey.String()))[:6]))
 	}
 	info.SIWCSessionID = sessionID
-	return body, nil
+	return foldSIWCSharedPrefix(info, body)
 }
 
 func resolveSIWCSessionID(info *relaycommon.RelayInfo, body []byte) string {
