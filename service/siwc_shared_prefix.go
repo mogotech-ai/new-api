@@ -36,10 +36,13 @@ const siwcSharedCutMarkerTTL = 24 * time.Hour
 const siwcSharedSnapBytes = 8192
 
 type siwcSharedText struct {
-	scope [32]byte
-	text  string
-	cut   int // where this request was cut, so where it wrote the cache
-	at    time.Time
+	scope    [32]byte
+	run      string // prompt cache key: the requests of one run (one game) share it
+	text     string
+	cut      int // where this request was cut, so where it wrote the cache
+	template [32]byte
+	marker   string // the learned cut that placed cut, if any
+	at       time.Time
 }
 
 type siwcSharedPrefixMemory struct {
@@ -93,7 +96,7 @@ func foldSIWCSharedPrefix(info *relaycommon.RelayInfo, body []byte) ([]byte, err
 	}
 
 	scope := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%d\x00%s\x00%s", info.TokenId, info.UserId, info.GetUpstreamModelName(), instructions.String())))
-	cut := siwcSharedPrefixes.cut(scope, text, max(minBytes-len(instructions.String()), 1), time.Now(),
+	cut := siwcSharedPrefixes.cut(scope, info.SIWCSessionID, text, max(minBytes-len(instructions.String()), 1), time.Now(),
 		time.Duration(setting.TTLSeconds)*time.Second, setting.MaxBytes)
 	if cut == 0 {
 		return body, nil
@@ -112,10 +115,10 @@ func foldSIWCSharedPrefix(info *relaycommon.RelayInfo, body []byte) ([]byte, err
 
 // cut remembers text and returns where to cut it, or 0. The cut is after the
 // last newline inside the longest prefix shared with a remembered text of the
-// scope, or after a cut marker of the same template when that reaches further;
+// scope, or after a learned cut of the same template when that reaches further;
 // an earlier request's cut a little before it wins, because that one is cached.
 // The cut leaves at least minCut bytes before it and something after it.
-func (m *siwcSharedPrefixMemory) cut(scope [32]byte, text string, minCut int, now time.Time, ttl time.Duration, maxBytes int) int {
+func (m *siwcSharedPrefixMemory) cut(scope [32]byte, run, text string, minCut int, now time.Time, ttl time.Duration, maxBytes int) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for len(m.texts) > 0 && (now.Sub(m.texts[0].at) > ttl || m.bytes > maxBytes) {
@@ -137,9 +140,15 @@ func (m *siwcSharedPrefixMemory) cut(scope [32]byte, text string, minCut int, no
 	shared := make([]int, len(m.texts))
 	longest := 0
 	for i, old := range m.texts {
-		if old.scope == scope {
-			shared[i] = siwcCommonPrefixLen(old.text, text)
-			longest = max(longest, shared[i])
+		if old.scope != scope {
+			continue
+		}
+		shared[i] = siwcCommonPrefixLen(old.text, text)
+		longest = max(longest, shared[i])
+		// A learned cut past where this run's own requests diverge is never
+		// read: forget it, so the next run does not write there either.
+		if old.run == run && old.marker != "" && shared[i] < old.cut {
+			delete(m.cuts[old.template], old.marker)
 		}
 	}
 	cut := strings.LastIndexByte(text[:min(longest, len(text)-1)], '\n') + 1 // a repeated message keeps its last line
@@ -153,7 +162,26 @@ func (m *siwcSharedPrefixMemory) cut(scope [32]byte, text string, minCut int, no
 	}
 	template := sha256.Sum256(append(scope[:], first...))
 	markers := m.cuts[template]
-	if cut > 0 {
+	marker := ""
+	for learned := range markers {
+		if i := strings.LastIndex(text, learned); i >= 0 && i+len(learned) > cut && valid(i+len(learned)) {
+			cut, marker = i+len(learned), learned
+			markers[learned] = now
+		}
+	}
+	snapped := 0
+	for i, old := range m.texts {
+		if old.cut > 0 && old.cut <= cut && cut-old.cut < siwcSharedSnapBytes && shared[i] >= old.cut {
+			snapped = max(snapped, old.cut)
+		}
+	}
+	if snapped > 0 {
+		cut, marker = snapped, ""
+	}
+	// Learn the cut the request is sent with, not the deeper one a retry of a
+	// sibling shares up to a market-specific heading; a learned cut that still
+	// overshoots is forgotten by the next run's siblings above.
+	if cut > 0 && marker == "" {
 		start := cut // the marker is the whole lines before the cut
 		for start > 0 && cut-start < siwcSharedCutMarkerBytes {
 			start = strings.LastIndexByte(text[:start-1], '\n') + 1
@@ -166,24 +194,9 @@ func (m *siwcSharedPrefixMemory) cut(scope [32]byte, text string, minCut int, no
 			markers[text[start:cut]] = now
 		}
 	}
-	for marker := range markers {
-		if i := strings.LastIndex(text, marker); i >= 0 && i+len(marker) > cut && valid(i+len(marker)) {
-			cut = i + len(marker)
-			markers[marker] = now
-		}
-	}
-	snapped := 0
-	for i, old := range m.texts {
-		if old.cut > 0 && old.cut <= cut && cut-old.cut < siwcSharedSnapBytes && shared[i] >= old.cut {
-			snapped = max(snapped, old.cut)
-		}
-	}
-	if snapped > 0 {
-		cut = snapped
-	}
 
 	if len(text) <= maxBytes {
-		m.texts = append(m.texts, siwcSharedText{scope: scope, text: text, cut: cut, at: now})
+		m.texts = append(m.texts, siwcSharedText{scope: scope, run: run, text: text, cut: cut, template: template, marker: marker, at: now})
 		m.bytes += len(text)
 	}
 	return cut
