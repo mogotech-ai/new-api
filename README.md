@@ -23,6 +23,12 @@
 - 管理员仪表盘与模型性能统计按实际调用的上游模型（映射后）归类，普通用户仍看到自己请求的模型。
 - 渠道告警 webhook 支持飞书、Lark 机器人格式（含签名校验）。
 
+**Prompt 缓存**
+- SIWC 渠道注入 session_id 和会话请求头（取请求的 prompt_cache_key，没有时由 instructions 和第一条 user 文本生成），同一会话稳定命中缓存；去掉 SIWC 不支持的 prompt_cache_retention、prompt_cache_breakpoint 等字段。
+- Chat、Responses、Claude、Gemini 互转时透传 prompt_cache_key、prompt_cache_breakpoint 等缓存字段。
+- 官方 OpenAI Responses 上的 gpt-5.6 及以后模型自动加 prompt_cache_breakpoint（全局设置 `prompt_cache_auto_breakpoint`，渠道可单独关闭）。
+- SIWC 渠道对反复出现的稳定输入前缀另发一次截断请求预热缓存（`siwc_prefix_prewarm`，默认开，不计费，失败不影响原请求）；旧的 `siwc_instructions_fold` 默认关，留作回滚。
+
 **协议转换**
 - OpenAI Chat 转 Claude 时保留文本块的 prompt `cache_control`。
 - Claude 联网搜索引用转为 Chat annotations 时附带引用区间。
