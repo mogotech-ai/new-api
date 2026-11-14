@@ -85,6 +85,7 @@ func TestSIWCSharedPrefixFoldNextGameUsesLearnedCut(t *testing.T) {
 
 	// The next game shares only its header with the last one, yet its first
 	// request is cut where the markets diverged, so its second one reads it.
+	info.SIWCSessionID = "LAL-GSW"
 	first, kept := siwcSharedTestFold(t, info, siwcPregameTestText("LAL-GSW", "spread"))
 	assert.True(t, strings.HasSuffix(first, "## Target market\n\nmarket_type\n"))
 	assert.Contains(t, first, "LAL-GSW stat row")
@@ -105,12 +106,61 @@ func TestSIWCSharedPrefixFoldLearnedCutStaysInItsTemplate(t *testing.T) {
 		return "# Complete the analysis\n" + strings.Repeat("LAL-GSW stat row\n", 2000) + "## Supplemental\nmetric,value\n" + rows +
 			strings.TrimPrefix(siwcPregameTestText("LAL-GSW", "spread"), "## Task\nCheck the forecast.\n")
 	}
+	info.SIWCSessionID = "follow-up"
 	instructions, _ := siwcSharedTestFold(t, info, followUp("a,1\nb,2\n"))
 	assert.Equal(t, "SYSTEM", instructions)
 	second, _ := siwcSharedTestFold(t, info, followUp("b,2\na,1\n"))
 	assert.True(t, strings.HasSuffix(second, "## Supplemental\nmetric,value\n"), "cut where its own requests diverge")
 	third, _ := siwcSharedTestFold(t, info, followUp("b,2\nc,3\n"))
 	assert.Equal(t, second, third)
+}
+
+// siwcPregameHypothesesText adds a market-specific section under a heading every market repeats.
+func siwcPregameHypothesesText(game, market, last string) string {
+	return siwcPregameTestText(game, market) + "\n## Hypotheses\nhypothesis_id,market_type,statement\n" +
+		strings.Repeat(market+" hypothesis row\n", 1000) + last + "\n"
+}
+
+func TestSIWCSharedPrefixFoldRetryDoesNotTeachMarketHeading(t *testing.T) {
+	siwcSharedTestSetup(t)
+	info := siwcSharedTestInfo(constant.ChannelTypeCodex)
+	info.SIWCSessionID = "BOS-NYK"
+	siwcSharedTestFold(t, info, siwcPregameTestText("BOS-NYK", "spread")+"\nhypothesis_id,market_type\na\n")
+	siwcSharedTestFold(t, info, siwcPregameTestText("BOS-NYK", "moneyline")+"\nhypothesis_id,market_type\na\n")
+	// A retry of the same market shares past the market up to the next heading.
+	siwcSharedTestFold(t, info, siwcPregameTestText("BOS-NYK", "moneyline")+"\nhypothesis_id,market_type\nb\n")
+
+	info.SIWCSessionID = "LAL-GSW"
+	var got []string
+	for _, market := range []string{"moneyline", "spread", "total"} {
+		instructions, _ := siwcSharedTestFold(t, info, siwcPregameTestText("LAL-GSW", market)+"\nhypothesis_id,market_type\n"+market+"\n")
+		got = append(got, instructions)
+	}
+	assert.True(t, strings.HasSuffix(got[0], "## Target market\n\nmarket_type\n"), "not cut after the retried heading")
+	assert.Equal(t, got[0], got[1])
+	assert.Equal(t, got[0], got[2])
+}
+
+func TestSIWCSharedPrefixFoldForgetsCutPastDivergence(t *testing.T) {
+	siwcSharedTestSetup(t)
+	info := siwcSharedTestInfo(constant.ChannelTypeCodex)
+	info.SIWCSessionID = "BOS-NYK"
+	siwcSharedTestFold(t, info, siwcPregameHypothesesText("BOS-NYK", "spread", "a"))
+	siwcSharedTestFold(t, info, siwcPregameHypothesesText("BOS-NYK", "moneyline", "a"))
+	// A retry far from any earlier cut teaches a cut inside the market section.
+	siwcSharedTestFold(t, info, siwcPregameHypothesesText("BOS-NYK", "moneyline", "b"))
+
+	info.SIWCSessionID = "LAL-GSW"
+	first, _ := siwcSharedTestFold(t, info, siwcPregameHypothesesText("LAL-GSW", "moneyline", "a"))
+	assert.Contains(t, first, "moneyline hypothesis row", "the first request still follows the bad cut")
+	second, _ := siwcSharedTestFold(t, info, siwcPregameHypothesesText("LAL-GSW", "spread", "a"))
+	assert.True(t, strings.HasSuffix(second, "## Target market\n\nmarket_type\n"), "siblings cut where they diverge")
+	third, _ := siwcSharedTestFold(t, info, siwcPregameHypothesesText("LAL-GSW", "total", "a"))
+	assert.Equal(t, second, third)
+
+	info.SIWCSessionID = "MIA-ORL"
+	next, _ := siwcSharedTestFold(t, info, siwcPregameHypothesesText("MIA-ORL", "moneyline", "a"))
+	assert.True(t, strings.HasSuffix(next, "## Target market\n\nmarket_type\n"), "the bad cut was forgotten")
 }
 
 func TestSIWCSharedPrefixFoldSkips(t *testing.T) {
@@ -174,29 +224,29 @@ func TestSIWCSharedPrefixMemoryBounds(t *testing.T) {
 	now := time.Now()
 	text := func(game string) string { return strings.Repeat(game+" row\n", 200) + "market\n" }
 	for i := range 10 {
-		m.cut([32]byte{1}, text(string(rune('A'+i))), 10, now, time.Hour, 3000)
+		m.cut([32]byte{1}, "run", text(string(rune('A'+i))), 10, now, time.Hour, 3000)
 	}
 	assert.LessOrEqual(t, m.bytes, 3000+len(text("A")), "older texts are dropped past max bytes")
 	assert.Equal(t, len(m.texts)*len(text("A")), m.bytes)
 
-	m.cut([32]byte{1}, text("A")+"one\n", 10, now, time.Hour, 1<<20)
-	m.cut([32]byte{1}, text("A")+"two\n", 10, now, time.Hour, 1<<20)
+	m.cut([32]byte{1}, "run", text("A")+"one\n", 10, now, time.Hour, 1<<20)
+	m.cut([32]byte{1}, "run", text("A")+"two\n", 10, now, time.Hour, 1<<20)
 	require.Len(t, m.cuts, 1)
-	m.cut([32]byte{1}, text("A"), 10, now.Add(2*time.Hour), time.Hour, 1<<20)
+	m.cut([32]byte{1}, "run", text("A"), 10, now.Add(2*time.Hour), time.Hour, 1<<20)
 	assert.Len(t, m.texts, 1, "texts expire after the TTL")
 	assert.Len(t, m.cuts, 1, "cut markers outlive the texts")
-	m.cut([32]byte{1}, text("B"), 10, now.Add(siwcSharedCutMarkerTTL+3*time.Hour), time.Hour, 1<<20)
+	m.cut([32]byte{1}, "run", text("B"), 10, now.Add(siwcSharedCutMarkerTTL+3*time.Hour), time.Hour, 1<<20)
 	assert.Empty(t, m.cuts, "cut markers expire too")
 
 	for i := range 100 { // every pair of texts shares a different prefix
 		base := strings.Repeat("x", 50) + string(rune('a'+i%26)) + string(rune('a'+i/26)) + "\n"
-		m.cut([32]byte{2}, base+"one\n", 10, now, time.Hour, 1<<20)
-		m.cut([32]byte{2}, base+"two\n", 10, now, time.Hour, 1<<20)
+		m.cut([32]byte{2}, "run", base+"one\n", 10, now, time.Hour, 1<<20)
+		m.cut([32]byte{2}, "run", base+"two\n", 10, now, time.Hour, 1<<20)
 	}
 	assert.LessOrEqual(t, len(m.cuts[[32]byte{2}]), siwcSharedCutsPerScope)
 
-	assert.Zero(t, m.cut([32]byte{3}, "no newline at all, so nothing to cut", 1, now, time.Hour, 1<<20))
-	assert.Zero(t, m.cut([32]byte{3}, "no newline at all, so nothing to cut", 1, now, time.Hour, 1<<20))
+	assert.Zero(t, m.cut([32]byte{3}, "run", "no newline at all, so nothing to cut", 1, now, time.Hour, 1<<20))
+	assert.Zero(t, m.cut([32]byte{3}, "run", "no newline at all, so nothing to cut", 1, now, time.Hour, 1<<20))
 }
 
 func TestApplySIWCResponsesRequirementsCodex(t *testing.T) {
