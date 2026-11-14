@@ -18,7 +18,6 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -34,16 +33,16 @@ func upstreamPricingFixture(t *testing.T, requested string) (*gin.Context, *rela
 	previousLogDB := model.LOG_DB
 	model.LOG_DB = db
 	previousRedis, previousBatch, previousLog := common.RedisEnabled, common.BatchUpdateEnabled, common.LogConsumeEnabled
-	previousCount, previousSensitive := constant.CountToken, setting.CheckSensitiveEnabled
+	previousCount := constant.CountToken
 	previousExport := common.DataExportEnabled
 	common.DataExportEnabled = false
 	common.RedisEnabled, common.BatchUpdateEnabled, common.LogConsumeEnabled = false, false, true
-	constant.CountToken, setting.CheckSensitiveEnabled = true, false
+	constant.CountToken = true
 	previousConfig := config.GlobalConfig.ExportAllConfigs()
 	t.Cleanup(func() {
 		model.LOG_DB = previousLogDB
 		common.RedisEnabled, common.BatchUpdateEnabled, common.LogConsumeEnabled = previousRedis, previousBatch, previousLog
-		constant.CountToken, setting.CheckSensitiveEnabled = previousCount, previousSensitive
+		constant.CountToken = previousCount
 		common.DataExportEnabled = previousExport
 		require.NoError(t, config.GlobalConfig.LoadFromDB(previousConfig))
 	})

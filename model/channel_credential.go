@@ -40,5 +40,6 @@ func SaveChannelCredentialWithLease(ctx context.Context, channelID int, previous
 	if result.RowsAffected != 1 {
 		return ErrSystemTaskLockLost
 	}
+	BumpSyncTopic(SyncTopicChannels)
 	return nil
 }

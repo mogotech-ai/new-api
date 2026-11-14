@@ -1,7 +1,10 @@
 package model
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"log"
 	"os"
 	"testing"
 
@@ -13,6 +16,7 @@ import (
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
 )
 
@@ -45,10 +49,10 @@ func TestOAuthCredentialLeaseDatabaseMatrix(t *testing.T) {
 			DB = db
 			t.Cleanup(func() {
 				DB = previousDB
-				require.NoError(t, db.Migrator().DropTable(&Channel{}, &SystemTaskLock{}))
+				require.NoError(t, db.Migrator().DropTable(&Channel{}, &SystemTaskLock{}, &SystemTask{}))
 				require.NoError(t, sqlDB.Close())
 			})
-			require.NoError(t, db.AutoMigrate(&Channel{}, &SystemTaskLock{}))
+			require.NoError(t, db.AutoMigrate(&Channel{}, &SystemTaskLock{}, &SystemTask{}))
 			versionQuery := "SELECT version()"
 			if dialect == "sqlite" {
 				versionQuery = "SELECT sqlite_version()"
@@ -82,50 +86,71 @@ func TestOAuthCredentialLeaseDatabaseMatrix(t *testing.T) {
 			assert.Equal(t, "latest-key", stored.Key)
 			assert.Equal(t, "preserved name", stored.Name)
 			assert.Equal(t, "model-one", stored.Models)
+
+			// An edit writes a new key through UpdateChannelLocked; a SIWC key stays out of the SQL log.
+			var sqlLog bytes.Buffer
+			db.Logger = logger.New(log.New(&sqlLog, "", 0), logger.Config{LogLevel: logger.Info})
+			_, err = UpdateChannelLocked(42, func(channel *Channel) error { channel.Key = "plain-key"; return nil })
+			require.NoError(t, err)
+			assert.Contains(t, sqlLog.String(), "plain-key")
+			_, err = UpdateChannelLocked(42, func(channel *Channel) error {
+				channel.Key = `{"client_id":"issued","access_token":"access-secret","refresh_token":"refresh-secret","expires_at":1800000000}`
+				return nil
+			})
+			require.NoError(t, err)
+			assert.NotContains(t, sqlLog.String(), "refresh-secret")
 		})
 	}
+}
+
+// useSystemTaskMatrixDB points DB at a fresh system_tasks table on dialect,
+// skipping MySQL and PostgreSQL unless TEST_MYSQL_DSN / TEST_POSTGRES_DSN are set.
+func useSystemTaskMatrixDB(t *testing.T, dialect string) *gorm.DB {
+	t.Helper()
+	var dialector gorm.Dialector
+	switch dialect {
+	case "sqlite":
+		dialector = sqlite.Open(":memory:")
+	case "mysql":
+		dsn := os.Getenv("TEST_MYSQL_DSN")
+		if dsn == "" {
+			t.Skip("TEST_MYSQL_DSN is not configured")
+		}
+		dialector = mysql.Open(dsn)
+	case "postgres":
+		dsn := os.Getenv("TEST_POSTGRES_DSN")
+		if dsn == "" {
+			t.Skip("TEST_POSTGRES_DSN is not configured")
+		}
+		dialector = postgres.Open(dsn)
+	}
+	db, err := gorm.Open(dialector, &gorm.Config{NamingStrategy: schema.NamingStrategy{TablePrefix: "history_test_"}})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	previousDB := DB
+	DB = db
+	t.Cleanup(func() {
+		DB = previousDB
+		require.NoError(t, db.Migrator().DropTable(&SystemTask{}))
+		require.NoError(t, sqlDB.Close())
+	})
+	require.NoError(t, db.AutoMigrate(&SystemTask{}))
+	var version string
+	versionQuery := "SELECT version()"
+	if dialect == "sqlite" {
+		versionQuery = "SELECT sqlite_version()"
+	}
+	require.NoError(t, db.Raw(versionQuery).Scan(&version).Error)
+	t.Logf("database version: %s", version)
+	return db
 }
 
 func TestSystemTaskHistoryDatabaseMatrix(t *testing.T) {
 	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
 		t.Run(dialect, func(t *testing.T) {
-			var dialector gorm.Dialector
-			switch dialect {
-			case "sqlite":
-				dialector = sqlite.Open(":memory:")
-			case "mysql":
-				dsn := os.Getenv("TEST_MYSQL_DSN")
-				if dsn == "" {
-					t.Skip("TEST_MYSQL_DSN is not configured")
-				}
-				dialector = mysql.Open(dsn)
-			case "postgres":
-				dsn := os.Getenv("TEST_POSTGRES_DSN")
-				if dsn == "" {
-					t.Skip("TEST_POSTGRES_DSN is not configured")
-				}
-				dialector = postgres.Open(dsn)
-			}
-			db, err := gorm.Open(dialector, &gorm.Config{NamingStrategy: schema.NamingStrategy{TablePrefix: "history_test_"}})
-			require.NoError(t, err)
-			sqlDB, err := db.DB()
-			require.NoError(t, err)
-			sqlDB.SetMaxOpenConns(1)
-			previousDB := DB
-			DB = db
-			t.Cleanup(func() {
-				DB = previousDB
-				require.NoError(t, db.Migrator().DropTable(&SystemTask{}))
-				require.NoError(t, sqlDB.Close())
-			})
-			require.NoError(t, db.AutoMigrate(&SystemTask{}))
-			var version string
-			versionQuery := "SELECT version()"
-			if dialect == "sqlite" {
-				versionQuery = "SELECT sqlite_version()"
-			}
-			require.NoError(t, db.Raw(versionQuery).Scan(&version).Error)
-			t.Logf("database version: %s", version)
+			db := useSystemTaskMatrixDB(t, dialect)
 
 			tasks := []SystemTask{
 				{TaskID: "model-failed-old", Type: SystemTaskTypeModelUpdate, Status: SystemTaskStatusFailed},
@@ -185,6 +210,45 @@ func TestSystemTaskHistoryDatabaseMatrix(t *testing.T) {
 			deleted, err = DeleteSystemTaskHistory(SystemTaskFilter{})
 			require.NoError(t, err)
 			assert.Zero(t, deleted, "repeated cleanup preserves the scheduler's latest runs")
+		})
+	}
+}
+
+// The daily cleanup deletes finished rows older than the retention in
+// batches, and keeps active rows, newer rows and the newest row of each type.
+func TestDeleteFinishedSystemTasksDatabaseMatrix(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			db := useSystemTaskMatrixDB(t, dialect)
+			const cutoff int64 = 1_000_000
+			old := make([]SystemTask, systemTaskCleanupBatchSize+1)
+			for i := range old {
+				old[i] = SystemTask{TaskID: fmt.Sprintf("sync-old-%d", i), Type: SyncTaskType(SyncTopicChannels), Status: SystemTaskStatusSucceeded, CreatedAt: 10, UpdatedAt: cutoff - 1}
+			}
+			require.NoError(t, db.CreateInBatches(&old, 200).Error)
+			kept := []SystemTask{
+				{TaskID: "test-old-pending", Type: SystemTaskTypeChannelTest, Status: SystemTaskStatusPending, CreatedAt: 10, UpdatedAt: 10},
+				{TaskID: "test-old-running", Type: SystemTaskTypeChannelTest, Status: SystemTaskStatusRunning, CreatedAt: 10, UpdatedAt: 10},
+				{TaskID: "sync-at-cutoff", Type: SyncTaskType(SyncTopicChannels), Status: SystemTaskStatusSucceeded, CreatedAt: 10, UpdatedAt: cutoff},
+				{TaskID: "sync-newest", Type: SyncTaskType(SyncTopicChannels), Status: SystemTaskStatusFailed, CreatedAt: 10, UpdatedAt: 10},
+				{TaskID: "log-newest", Type: SystemTaskTypeLogCleanup, Status: SystemTaskStatusFailed, CreatedAt: 10, UpdatedAt: 10},
+			}
+			deletedRows := []SystemTask{
+				{TaskID: "log-old-failed", Type: SystemTaskTypeLogCleanup, Status: SystemTaskStatusFailed, CreatedAt: 10, UpdatedAt: 10},
+			}
+			require.NoError(t, db.Create(&deletedRows).Error)
+			require.NoError(t, db.Create(&kept).Error)
+
+			deleted, err := DeleteFinishedSystemTasks(context.Background(), cutoff)
+			require.NoError(t, err)
+			assert.EqualValues(t, len(old)+len(deletedRows), deleted)
+			var remaining []string
+			require.NoError(t, db.Model(&SystemTask{}).Order("id").Pluck("task_id", &remaining).Error)
+			assert.Equal(t, []string{"test-old-pending", "test-old-running", "sync-at-cutoff", "sync-newest", "log-newest"}, remaining)
+
+			deleted, err = DeleteFinishedSystemTasks(context.Background(), cutoff)
+			require.NoError(t, err)
+			assert.Zero(t, deleted)
 		})
 	}
 }
