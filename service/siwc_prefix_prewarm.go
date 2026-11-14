@@ -101,7 +101,7 @@ type SIWCPrefixPrewarm struct {
 	estTokens int
 }
 
-// PlanSIWCPrefixPrewarm indexes the message boundaries of a final SIWC
+// PlanSIWCPrefixPrewarm indexes the message boundaries of a final SIWC or Codex
 // Responses body and returns a prewarm of the longest boundary that earlier
 // requests repeated but upstream is not known to have cached, or nil. body is
 // never changed. SIWC writes the prompt cache only at the end of instructions
@@ -114,7 +114,8 @@ func PlanSIWCPrefixPrewarm(info *relaycommon.RelayInfo, body []byte) *SIWCPrefix
 	}
 	info.SIWCWarmPrefixKey, info.SIWCWarmPrefixTokens = [32]byte{}, 0 // a retry may land on another channel
 	setting := model_setting.GetGlobalSettings().SIWCPrefixPrewarm
-	if !setting.Enabled || info.ChannelMeta == nil || !info.IsSIWC || info.IsChannelTest || info.RelayMode != relayconstant.RelayModeResponses {
+	if !setting.Enabled || info.ChannelMeta == nil || !(info.IsSIWC || info.ChannelType == constant.ChannelTypeCodex) ||
+		info.IsChannelTest || info.RelayMode != relayconstant.RelayModeResponses {
 		return nil
 	}
 	request := gjson.ParseBytes(body)
@@ -226,7 +227,7 @@ func PlanSIWCPrefixPrewarm(info *relaycommon.RelayInfo, body []byte) *SIWCPrefix
 			}
 			truncated.WriteByte(']')
 			prewarmBody, err := sjson.SetRawBytes(body, "input", []byte(truncated.String()))
-			if err == nil {
+			if err == nil && info.IsSIWC { // the Codex adaptor drops this field for its backend; the stream close bounds output there
 				prewarmBody, err = sjson.SetBytes(prewarmBody, "max_output_tokens", setting.MaxOutputTokens)
 			}
 			if err == nil {

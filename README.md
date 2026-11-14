@@ -28,6 +28,8 @@
 - Chat、Responses、Claude、Gemini 互转时透传 prompt_cache_key、prompt_cache_breakpoint 等缓存字段。
 - 官方 OpenAI Responses 上的 gpt-5.6 及以后模型自动加 prompt_cache_breakpoint（全局设置 `prompt_cache_auto_breakpoint`，渠道可单独关闭）。
 - SIWC 渠道对反复出现的稳定输入前缀另发一次截断请求预热缓存（`siwc_prefix_prewarm`，默认开，不计费，失败不影响原请求）；旧的 `siwc_instructions_fold` 默认关，留作回滚。
+- Codex 渠道（ChatGPT 账号）和 SIWC 一样注入 prompt_cache_key 与会话请求头，并参与上面的前缀预热（预热请求不带 Codex 不收的 max_output_tokens）。
+- 只有一条长 user 消息的请求（如同一场比赛按盘口各问一次的赛前报告），把与最近同类请求相同的开头挪到 instructions 末尾，由请求自己写缓存、后续请求命中，不额外发请求；按消息模板记住切点，下一场的第一次请求也切在同一处（`siwc_shared_prefix_fold`，默认开，仅 `token_names` 里的令牌，默认 forecast）。
 
 **协议转换**
 - OpenAI Chat 转 Claude 时保留文本块的 prompt `cache_control`。
