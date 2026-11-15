@@ -24,7 +24,7 @@
 - 渠道告警 webhook 支持飞书、Lark 机器人格式（含签名校验）。
 
 **Prompt 缓存**
-- SIWC 渠道注入 session_id 和会话请求头（取请求的 prompt_cache_key，没有时由 instructions 和第一条 user 文本生成），同一会话稳定命中缓存；去掉 SIWC 不支持的 prompt_cache_retention、prompt_cache_breakpoint 等字段。
+- SIWC 渠道注入 session_id 和会话请求头（取请求的 prompt_cache_key，没有时由 instructions 和第一条 user 文本生成；非流式、只有一条 user 消息的单次调用只用 instructions，让共用 system 的调用落在同一个 key 上，共有前缀折叠名单里的令牌除外），同一会话稳定命中缓存；去掉 SIWC 不支持的 prompt_cache_retention、prompt_cache_breakpoint 等字段。
 - Chat、Responses、Claude、Gemini 互转时透传 prompt_cache_key、prompt_cache_breakpoint 等缓存字段。
 - 官方 OpenAI Responses 上的 gpt-5.6 及以后模型自动加 prompt_cache_breakpoint（全局设置 `prompt_cache_auto_breakpoint`，渠道可单独关闭）。
 - SIWC 渠道对反复出现的稳定输入前缀另发一次截断请求预热缓存（`siwc_prefix_prewarm`，默认开，不计费，失败不影响原请求）；旧的 `siwc_instructions_fold` 默认关，留作回滚。

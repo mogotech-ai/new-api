@@ -173,7 +173,7 @@ func resolveSIWCSessionID(info *relaycommon.RelayInfo, body []byte) string {
 		}
 	}
 	prefix := instructions[:min(len(instructions), 32*1024)]
-	if firstUser != "" && (prefix == "" || model_setting.GetGlobalSettings().SIWCPrefixPrewarm.Enabled) {
+	if firstUser != "" && (prefix == "" || (model_setting.GetGlobalSettings().SIWCPrefixPrewarm.Enabled && !siwcSingleTurnCall(info, input))) {
 		if prefix != "" {
 			prefix += "\n\n"
 		}
@@ -181,6 +181,27 @@ func resolveSIWCSessionID(info *relaycommon.RelayInfo, body []byte) string {
 	}
 	seed := fmt.Sprintf("%d\n%d\n%s\n%s", info.TokenId, info.UserId, info.GetUpstreamModelName(), prefix)
 	return fmt.Sprintf("%x", common.Sha256Raw([]byte(seed)))
+}
+
+// siwcSingleTurnCall reports a non-streamed request whose input is one user
+// message, such as a judge or writer called once per event with a shared system
+// prompt. It has no conversation for the first user text to tell apart, and
+// such calls must share one key for upstream to keep their instructions cached.
+// Streamed chats keep the first user text, so a chat's first turn has the key
+// of its later turns; so do tokens under the shared prefix fold, which keeps
+// one run per key.
+// shortcut: a retry after a failed upstream attempt may see IsStream already set
+// by that attempt and keep the per-call key; read the client flag if that matters.
+func siwcSingleTurnCall(info *relaycommon.RelayInfo, input gjson.Result) bool {
+	fold := model_setting.GetGlobalSettings().SIWCSharedPrefixFold
+	if info.IsStream || (fold.Enabled && slices.Contains(fold.TokenNames, info.TokenName)) {
+		return false
+	}
+	if input.Type == gjson.String {
+		return true
+	}
+	items := input.Array()
+	return len(items) == 1 && items[0].Get("role").String() == "user"
 }
 
 func siwcPromptText(value gjson.Result) string {
