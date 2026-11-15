@@ -141,7 +141,8 @@ func TestApplySIWCResponsesRequirementsGeneratedSession(t *testing.T) {
 				}
 				want := fmt.Sprintf("%x", sha256.Sum256([]byte("7\n9\ngpt-test\n"+prefix)))
 				for range 2 {
-					info := &relaycommon.RelayInfo{TokenId: 7, UserId: 9, ChannelMeta: &relaycommon.ChannelMeta{IsSIWC: true, UpstreamModelName: "gpt-test"}}
+					// Streamed, as a chat: single-turn calls are covered by the test below.
+					info := &relaycommon.RelayInfo{TokenId: 7, UserId: 9, IsStream: true, ChannelMeta: &relaycommon.ChannelMeta{IsSIWC: true, UpstreamModelName: "gpt-test"}}
 					body, err := ApplySIWCResponsesRequirements(info, []byte(tc.body))
 					require.NoError(t, err)
 					assert.Equal(t, want, info.SIWCSessionID)
@@ -156,6 +157,37 @@ func TestApplySIWCResponsesRequirementsGeneratedSession(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestApplySIWCResponsesRequirementsSingleTurnSession(t *testing.T) {
+	prewarm, fold := model_setting.GetGlobalSettings().SIWCPrefixPrewarm, model_setting.GetGlobalSettings().SIWCSharedPrefixFold
+	t.Cleanup(func() {
+		model_setting.GetGlobalSettings().SIWCPrefixPrewarm, model_setting.GetGlobalSettings().SIWCSharedPrefixFold = prewarm, fold
+	})
+	model_setting.GetGlobalSettings().SIWCPrefixPrewarm.Enabled = true
+	model_setting.GetGlobalSettings().SIWCSharedPrefixFold = model_setting.SIWCSharedPrefixFold{Enabled: true, TokenNames: []string{"forecast"}}
+	seed := func(prefix string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte("7\n9\ngpt-test\n"+prefix))) }
+	for _, tc := range []struct {
+		name, token, body, prefix string
+		stream                    bool
+	}{
+		// Judges called once per event share their system prompt's cache only on one key.
+		{name: "string input", body: `{"instructions":"Judge","input":"event 1"}`, prefix: "Judge"},
+		{name: "one user message", body: `{"instructions":"Judge","input":[{"role":"user","content":"event 2"}]}`, prefix: "Judge"},
+		{name: "streamed chat turn", stream: true, body: `{"instructions":"Judge","input":"event 1"}`, prefix: "Judge\n\nevent 1"},
+		{name: "later turn", body: `{"instructions":"Judge","input":[{"role":"user","content":"event 1"},{"role":"assistant","content":"ok"},{"role":"user","content":"more"}]}`, prefix: "Judge\n\nevent 1"},
+		{name: "two user messages", body: `{"instructions":"Judge","input":[{"role":"user","content":"event 1"},{"role":"user","content":"more"}]}`, prefix: "Judge\n\nevent 1"},
+		{name: "shared prefix fold token", token: "forecast", body: `{"instructions":"Judge","input":"game 1"}`, prefix: "Judge\n\ngame 1"},
+		{name: "no instructions", body: `{"input":"event 1"}`, prefix: "event 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			info := &relaycommon.RelayInfo{TokenId: 7, UserId: 9, TokenName: tc.token, IsStream: tc.stream, ChannelMeta: &relaycommon.ChannelMeta{IsSIWC: true, UpstreamModelName: "gpt-test"}}
+			body, err := ApplySIWCResponsesRequirements(info, []byte(tc.body))
+			require.NoError(t, err)
+			assert.Equal(t, seed(tc.prefix), info.SIWCSessionID)
+			assert.Equal(t, seed(tc.prefix), gjson.GetBytes(body, "prompt_cache_key").String())
+		})
 	}
 }
 
