@@ -17,6 +17,7 @@
 
 **请求与响应内容记录**
 - 渠道可开启请求、响应体记录（独立的 `relay_payloads` 表，完整保存不截断），新建渠道默认开启；原生 Responses 接口同样记录。
+- 请求、响应体在库里只留最近 7 个整天（UTC，`RELAY_PAYLOAD_RETENTION_DAYS`）：每小时的定时任务 `relay_payload_archive` 把更早的每天写成一个 zstd 文件（JSON 行，默认 `/data/relay-archive/relay-payloads-<日期>.jsonl.zst`，`RELAY_PAYLOAD_ARCHIVE_DIR`），写完才从 `relay_payloads` 删除；使用日志不动。查旧原文：`zstd -dc <文件> | grep <关键词>`。`RELAY_PAYLOAD_ARCHIVE_ENABLED=false` 关闭。
 - 使用日志中可全宽查看、复制、下载请求与响应体（JSON 美化、长行换行、转义换行显示为真实换行）。
 - root 用户可按请求或响应内容中的关键词筛选使用日志（时间范围最多 7 天，最多 5000 条匹配）。
 
