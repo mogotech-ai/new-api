@@ -124,3 +124,29 @@ func deleteOldRelayPayloadBatch(ctx context.Context, targetTimestamp int64, limi
 	result := DB.WithContext(ctx).Where("created_at < ?", targetTimestamp).Limit(limit).Delete(&RelayPayload{})
 	return result.RowsAffected, result.Error
 }
+
+// OldestRelayPayloadCreatedAt returns the created_at of the oldest payload, or
+// ok=false when the table is empty.
+func OldestRelayPayloadCreatedAt(ctx context.Context) (int64, bool, error) {
+	var oldest []int64
+	err := DB.WithContext(ctx).Model(&RelayPayload{}).Order("created_at asc").Limit(1).Pluck("created_at", &oldest).Error
+	if err != nil || len(oldest) == 0 {
+		return 0, false, err
+	}
+	return oldest[0], true, nil
+}
+
+// GetRelayPayloadsCreatedBetween returns up to limit payloads created in
+// [start, end) with an id above afterId, in id order.
+func GetRelayPayloadsCreatedBetween(ctx context.Context, start, end, afterId int64, limit int) ([]RelayPayload, error) {
+	var rows []RelayPayload
+	err := DB.WithContext(ctx).
+		Where("created_at >= ? AND created_at < ? AND id > ?", start, end, afterId).
+		Order("id asc").Limit(limit).Find(&rows).Error
+	return rows, err
+}
+
+func DeleteRelayPayloadsByIds(ctx context.Context, ids []int64) (int64, error) {
+	result := DB.WithContext(ctx).Where("id IN ?", ids).Delete(&RelayPayload{})
+	return result.RowsAffected, result.Error
+}

@@ -24,6 +24,7 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
 	service.RegisterSystemTaskHandler(systemTaskCleanupHandler{})
 	service.RegisterSystemTaskHandler(pricingFillHandler{})
+	service.RegisterSystemTaskHandler(relayPayloadArchiveHandler{})
 }
 
 // systemTaskCleanupHandler deletes, once a day, the finished system tasks
