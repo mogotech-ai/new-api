@@ -13,6 +13,7 @@
 - Chat 转 Responses 路径计入 web_search、file_search 等托管工具调用费用，并剔除 gpt-6.1-sol 等模型不支持的采样参数。
 - `chat_completions_to_responses_policy` 的模型匹配按映射后的上游模型名。
 - 渠道本地余额限额可在快捷操作中开关；复制渠道并重置余额时自动关闭限额。
+- 每 30 分钟给已启用渠道里没有价格的模型从官方倍率预设补价格（定时任务 `pricing_fill`），已有价格一律不动，补了什么记在任务结果和容器日志里；预设里也没有的模型仍按自用模式兜底倍率计费，需要手动定价。`PRICING_FILL_TASK_ENABLED=false` 关闭。
 
 **请求与响应内容记录**
 - 渠道可开启请求、响应体记录（独立的 `relay_payloads` 表，完整保存不截断），新建渠道默认开启；原生 Responses 接口同样记录。
